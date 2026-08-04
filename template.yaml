@@ -1,0 +1,165 @@
+# palm_postproc configuration template
+# Copy to configs/<your_job>.yaml and edit as needed.
+# Run with: python run_postproc.py -c configs/<your_job>.yaml
+
+##############################################################################
+# 1. IDENTIFICATION
+##############################################################################
+
+case: holesovice_stern_now   # required; used in path substitution as {case}
+
+# Nested domain suffix, e.g. 2 → "_N02". Leave null for root domain.
+domain: null
+
+##############################################################################
+# 2. PATHS
+##############################################################################
+
+paths:
+  base: ~/palm/model.git/build/JOBS  # required; path to the PALM job directory
+
+  # Raw PALM OUTPUT directory — source for the join step.
+  # Tokens available: {base}, {case}, {outbase} (={base}/{case}), {domain}
+  join_input: "{base}/{case}/OUTPUT"
+
+  # Optional: override the input directory for all post-join steps.
+  # When set, join is bypassed and files are read directly from here.
+  # Useful for running only splitz/splittime/coord on pre-existing files.
+  #input: "{base}/{case}/OUTPUT_join"
+
+  # Output directories. All default to {base}/{case}/OUTPUT_*/
+  # so each case's results are self-contained in their own subdirectory.
+  # {outbase} expands to {base}/{case}.
+  # In chain mode only the last enabled step's directory is created.
+  #output_join:      "{outbase}/OUTPUT_join"
+  #output_splitvar:  "{outbase}/OUTPUT_splitvar"
+  #output_splitz:    "{outbase}/OUTPUT_splitz"
+  #output_splittime: "{outbase}/OUTPUT_splittime"
+  #output_coord:     "{outbase}/OUTPUT_coord"
+
+##############################################################################
+# 3. GENERAL
+##############################################################################
+
+# zlib compression level for all output NetCDF files (1–9).
+# Tip: complevel=1 is often 90% as small as complevel=4 but 2–3× faster.
+complevel: 4
+
+# In-memory chaining (default: true).
+# join always writes to disk first; subsequent steps are chained in memory.
+# Set to false to write intermediate files after each step (for debugging).
+chain: true
+
+# Parallel file workers (default: 1 = sequential).
+workers: 1
+
+# If false (default), files already up to date are skipped automatically
+# via the resume state file ({base}/{case}/.palm_postproc_state.json).
+# If true, all outputs are unconditionally rewritten.
+overwrite: false
+
+# Verbosity: "debug", "info", "warning". Overridden by -v / -q CLI flags.
+verbosity: info
+
+##############################################################################
+# 4. STEPS
+# Order: join → splitvar → splitz → splittime → coord
+# Each step can be individually enabled/disabled.
+##############################################################################
+
+steps:
+
+  # --- 4a. JOIN ----------------------------------------------------------- #
+  # Joins segmented PALM output parts into single NetCDF files.
+  # Runs before all other steps; output feeds into splitvar.
+  #
+  # NOTE: `join` output (or raw single-part OUTPUT/) is ALSO the correct
+  # input for the companion tool palm2gis, which is a parallel branch, not
+  # a downstream step:
+  #
+  #   PALM -> join -+-> splitvar -> splitz -> splittime -> coord  (analysis)
+  #                 +-> palm2gis  (+ static driver)               (GIS, optional)
+  #
+  # Never feed splitvar/splitz/splittime/coord output into palm2gis: it
+  # expects raw variable layout, kelvin, local coordinates and the full
+  # grid, and rejects coord-processed files (absolute UTM, degrees C).
+  join:
+    enabled: true
+
+    # File stems to join. "all" auto-detects from join_input.
+    # Use {case} token to avoid repeating the case name.
+    filelist: all
+    # filelist:
+    #   - "{case}_av_xy_N02"
+    #   - "{case}_av_3d_N02"
+
+    # How parts are named/located. Usually "filenum" for PALM HPC output.
+    # Options: filenum | dirpart | filepart | filepattern | singlefile | tmpdir
+    convention: filenum
+
+    file_prefix: ""
+    file_suffix: ".nc"   # always set to .nc so downstream steps find the files
+
+    create_new_file: true
+    offset_min:      0
+    part_timeshift:  0
+    output_timestep: 0
+
+    # Join step uses its own complevel (default 6, original script default).
+    complevel: 6
+
+  # --- 4b. SPLITVAR ------------------------------------------------------- #
+  splitvar:
+    enabled: true
+
+    # "all"  → extract every variable; "none"/blank → skip this file type.
+    vars_2d: all
+    # vars_2d:
+    #   - tsurf*_xy
+    #   - ta_2m*_xy
+    #   - bio_utci*_xy
+
+    vars_3d: all
+    # vars_3d: none
+
+    # Variables written into a single combined file (3D only).
+    group_vars: [u, v, w]
+    group_suffix: uvw
+
+  # --- 4c. SPLITZ --------------------------------------------------------- #
+  splitz:
+    enabled: true
+    z_max: 300.0      # metres
+    z_coord: zu_3d    # vertical coordinate name in the NetCDF file
+
+  # --- 4d. SPLITTIME ------------------------------------------------------ #
+  splittime:
+    enabled: true
+    t_start: null     # 0-based index; null = from beginning
+    t_end:   null     # inclusive;     null = to end
+    timestep: null    # e.g. "1h", "30m", "3600"; null = keep all
+
+  # --- 4e. COORD ---------------------------------------------------------- #
+  coord:
+    enabled: true
+    # utm   -> projected dimension coordinates + E_UTM/N_UTM aux variables
+    # wgs84 -> adds 2-D auxiliary latitude/longitude on (y, x), CF-style.
+    #          A PALM domain is regular in its PROJECTED CRS, so lon/lat
+    #          cannot be 1-D dimension coordinates; CF handles this with
+    #          2-D auxiliary coordinates, which QGIS, ArcGIS, xarray and
+    #          Panoply all understand. The projected dims are kept either
+    #          way — wgs84 adds lat/lon, it does not replace the grid.
+    # both  -> UTM aux variables AND lat/lon
+    crs: utm          # utm | wgs84 | both
+    # utm_zone: 33    # EPSG code override. If neither this nor the file
+    #                 # supplies one, EPSG:32633 is assumed and WARNED about.
+    # Convert temperature variables from kelvin to degrees C (units
+    # attribute set to "degrees_C"; fill values are left untouched).
+    # Covers theta*, tsurf*, t_surf* and ta* — the SAME list as palm2gis,
+    # so a directory can no longer mix the two units.
+    #
+    # CHANGED IN 0.4.0: the default is now false (kelvin), matching
+    # palm2gis. It used to be true here and false there. Leaving this key
+    # out logs a warning naming the change; set it explicitly either way
+    # so the config says what it means.
+    celsius: false

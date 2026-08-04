@@ -1,0 +1,45 @@
+# ------------------------------
+# Python
+# ------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ------------------------------
+# Pipeline outputs and state
+# ------------------------------
+OUTPUT/
+OUTPUT_join/
+OUTPUT_splitvar/
+OUTPUT_splitz/
+OUTPUT_splittime/
+OUTPUT_coord/
+.palm_postproc_state.json
+*.log
+
+# ------------------------------
+# Job configs are user-managed; keep the directory, not its contents
+# ------------------------------
+configs/*.yaml
+!configs/example*.yaml
+
+# ------------------------------
+# NetCDF data (never commit)
+# ------------------------------
+*.nc
+*.nc.tmp
+
+# ------------------------------
+# Editors and OS
+# ------------------------------
+.vscode/
+.idea/
+.DS_Store
+*.swp

@@ -1,0 +1,6 @@
+xarray>=2023.1
+netCDF4
+numpy
+pyyaml
+# optional but strongly recommended for large files:
+dask[array]
