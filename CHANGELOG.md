@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.4.1
+
+**Correctness**
+
+- `join` no longer fails with
+  `IndexError: size of data array does not conform to slice` when the parts
+  of one output file do not tile the global time axis end to end.
+
+  Each part was matched to the global timestep list as a single contiguous
+  run (`ptsmin`/`ptsmax` → `tsmin`/`tsmax`) and written with one slice
+  assignment per variable. That is only correct when no other part
+  contributes a timestep that falls *between* two of this part's
+  timesteps. A re-run restart cycle whose output times are offset from the
+  cycle it overlaps — or two cycles written at different
+  `dt_do3d`/`averaging_interval` — breaks the assumption: the destination
+  slice comes out longer than the source data and netCDF4 rejects the
+  write. The failure surfaces on the first affected file and aborts the
+  whole pipeline.
+
+  Parts are now matched timestep by timestep. Each part carries an explicit
+  `(source index → global index)` map and is written one record at a time,
+  so parts may overlap, interleave, or leave gaps in any combination. Later
+  parts still win on collision, as before.
+
+- Near-duplicate timesteps are now merged whatever `output_timestep` is set
+  to. The merge test was `abs(dt) < output_timestep / 2.0`, which with the
+  default `output_timestep: 0` compares against zero and therefore never
+  fires, so the sub-second differences PALM writes at restart-cycle
+  boundaries survived into the joined file as separate records. The
+  tolerance now falls back to a quarter of the median output interval, and
+  can be set explicitly with the new `steps.join.merge_tol` key.
+
+- `time` is no longer written twice per part. It was written once with
+  `part_timeshift` applied and then again, unshifted, by the generic
+  time-dependent-variable loop, so a non-zero `part_timeshift` was silently
+  discarded. The generic loop now skips it.
+
+- A part whose variable is *smaller* than the joined output in a non-time
+  dimension is reported and skipped instead of raising a bare
+  `ValueError: operands could not be broadcast together`. This is what a
+  mid-run change of `nz_do3d` looks like on disk.
+
+- A file whose timesteps are all removed by the `output_timestep` filter
+  closes cleanly with a warning instead of raising `IndexError` on an empty
+  timestep list.
+
+**Config**
+
+- New `steps.join.merge_tol` (seconds, default unset = auto). Two timesteps
+  closer together than this count as the same instant.
+
+**Tests**
+
+- `test.py` gains a join regression case built from three parts, the third
+  of which interleaves with the second, plus unit checks for
+  `_merge_tolerance`.
+
 ## 0.4.0
 
 **Logging**

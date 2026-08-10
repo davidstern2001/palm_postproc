@@ -42,6 +42,7 @@ _DEFAULTS: dict = {
             "offset_min":     0,
             "part_timeshift": 0,
             "output_timestep": 0,
+            "merge_tol":      None,
             "complevel":      6,
         },
         "splitvar": {
@@ -107,6 +108,7 @@ class JoinConfig:
     offset_min:      int
     part_timeshift:  int
     output_timestep: int
+    merge_tol:       Optional[float]
     complevel:       int
 
 
@@ -388,6 +390,8 @@ def load(path: Union[str, Path]) -> Config:
         offset_min      = int(s["join"]["offset_min"]),
         part_timeshift  = int(s["join"]["part_timeshift"]),
         output_timestep = int(s["join"]["output_timestep"]),
+        merge_tol       = (None if s["join"]["merge_tol"] is None
+                           else float(s["join"]["merge_tol"])),
         complevel       = int(s["join"]["complevel"]),
     )
     splitvar = SplitvarsConfig(

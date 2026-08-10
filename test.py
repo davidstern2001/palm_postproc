@@ -269,6 +269,76 @@ def unit_checks(failures):
         check(not is_temperature(name), f"not is_temperature({name!r})",
               failures)
 
+    from palm_postproc.steps.join import _merge_tolerance
+
+    check(_merge_tolerance([0.0, 3600.0, 7200.0], 1800, None) == 900.0,
+          "_merge_tolerance honours output_timestep", failures)
+    check(_merge_tolerance([0.0, 3600.0, 7200.0], 0, None) == 900.0,
+          "_merge_tolerance auto = 1/4 median interval", failures)
+    check(_merge_tolerance([0.0, 3600.0], 1800, 5.0) == 5.0,
+          "_merge_tolerance explicit override wins", failures)
+    check(_merge_tolerance([42.0], 0, None) > 0.0,
+          "_merge_tolerance survives a single timestep", failures)
+
+
+# ------------------------------
+# 5b. JOIN REGRESSION: INTERLEAVED RESTART CYCLES
+# ------------------------------
+def join_interleave_check(root, failures):
+    """
+    A re-run restart cycle whose output times fall *between* the times of
+    the cycle it overlaps used to raise
+    IndexError: size of data array does not conform to slice
+    because each part was written with one contiguous slice assignment.
+    """
+    print("\n-- join: interleaved restart cycles -----------------------")
+    import logging
+    import numpy as np
+    from netCDF4 import Dataset
+    from palm_postproc.steps.join import _join_file
+
+    src = root / "interleave" / "OUTPUT"
+    dst = root / "interleave" / "OUTPUT_join"
+    src.mkdir(parents=True, exist_ok=True)
+
+    parts = ([1800.0, 3600.0], [5400.0, 7200.0, 9000.0], [6300.0, 8100.0])
+    for i, times in enumerate(parts):
+        ds = Dataset(src / f"{CASE}_av_3d.{i:03d}.nc", "w", format="NETCDF4")
+        ds.createDimension("time", None)
+        ds.createDimension("x", 4)
+        ds.createDimension("y", 3)
+        ds.createDimension("zu_3d", 2)
+        ds.createVariable("time", "f8", ("time",))[:] = np.array(times)
+        for name, size in (("x", 4), ("y", 3), ("zu_3d", 2)):
+            ds.createVariable(name, "f4", (name,))[:] = np.arange(size)
+        v = ds.createVariable("theta", "f4", ("time", "zu_3d", "y", "x"),
+                              fill_value=-9999.0)
+        v[:] = np.full((len(times), 2, 3, 4), float(i), dtype="f4")
+        ds.close()
+
+    log = logging.getLogger("palm_postproc")
+    try:
+        ok = _join_file(1, 1, f"{CASE}_av_3d", str(src), str(dst),
+                        "", ".nc", "filenum", True, 0, 0, 0, None, 4,
+                        True, False, log)
+    except Exception as exc:
+        check(False, f"join raised {type(exc).__name__}: {exc}", failures)
+        return
+
+    check(ok, "join of interleaved cycles returned OK", failures)
+
+    with Dataset(dst / f"{CASE}_av_3d.nc") as ds:
+        times = [float(t) for t in ds.variables["time"][:]]
+        theta = ds.variables["theta"][:]
+
+    check(times == [1800.0, 3600.0, 5400.0, 6300.0, 7200.0, 8100.0, 9000.0],
+          f"join built the full timestep union, got {times}", failures)
+    check(not np.ma.is_masked(theta) or theta.mask.sum() == 0,
+          "no unwritten timesteps left in the joined data", failures)
+    check([float(theta[i, 0, 0, 0]) for i in range(len(times))]
+          == [0.0, 0.0, 1.0, 2.0, 1.0, 2.0, 1.0],
+          "each timestep came from the part that owns it", failures)
+
 
 # ------------------------------
 # 6. OUTPUT VERIFICATION
@@ -487,6 +557,7 @@ def run(keep=False):
     tmp = Path(tempfile.mkdtemp(prefix="palm_postproc_test_"))
     try:
         unit_checks(failures)
+        join_interleave_check(tmp, failures)
 
         print("\n-- building the synthetic dataset ------------------------")
         base = tmp / "main"

@@ -61,6 +61,41 @@ def _partnames(
     return parts
 
 
+def _merge_tolerance(tsteps: list, output_timestep: int,
+                     merge_tol: float | None) -> float:
+    """
+    Tolerance (seconds) within which two timesteps count as the same instant.
+
+    Explicit config wins. Otherwise output_timestep/2 if set, else a quarter
+    of the median output interval, which absorbs the sub-second differences
+    PALM writes at restart-cycle boundaries without merging genuine steps.
+    """
+    if merge_tol is not None:
+        return float(merge_tol)
+    if output_timestep > 0:
+        return output_timestep / 2.0
+    arr = np.asarray(tsteps, dtype=float)
+    if arr.size < 2:
+        return 1e-6
+    diffs = np.diff(arr)
+    diffs = diffs[diffs > 0]
+    if diffs.size == 0:
+        return 1e-6
+    return max(float(np.median(diffs)) * 0.25, 1e-6)
+
+
+def _shape_ok(vn, dst_var, src_var, partname: str, log: logging.Logger) -> bool:
+    """Check that a part's variable is large enough to fill the output slot."""
+    dshape = dst_var.shape[1:]
+    sshape = src_var.shape[1:]
+    if len(dshape) != len(sshape) or any(s < d for s, d in zip(sshape, dshape)):
+        log.warning("[join]   Variable %s in %s has shape %s but output needs %s "
+                    "— skipping this variable for this part.",
+                    vn, partname, sshape, dshape)
+        return False
+    return True
+
+
 def _nc_copy_structure(
     nc_in:     Dataset,
     nc_out:    Dataset,
@@ -132,6 +167,7 @@ def _join_file(
     offset_min:     int,
     part_timeshift: int,
     output_timestep: int,
+    merge_tol:      float | None,
     complevel:      int,
     overwrite:      bool,
     dry_run:        bool,
@@ -257,15 +293,21 @@ def _join_file(
         tsteps_set = tsteps_set.union(set(pinfo[part]["ptsteps"]))
     tsteps2 = sorted(tsteps_set)
 
-    # Remove duplicate timesteps
+    # Collapse near-duplicate timesteps (restart-cycle overlaps).
+    # The later value wins, matching the original behaviour.
+    tol = _merge_tolerance(tsteps2, output_timestep, merge_tol)
+    log.debug("[join]   Timestep merge tolerance: %g s", tol)
+
     tsteps: list = []
-    for i2, ts in enumerate(tsteps2):
-        if i2 == 0:
-            tsteps = [ts]
-        elif abs(ts - tsteps2[i2 - 1]) < output_timestep / 2.0:
+    for ts in tsteps2:
+        if tsteps and abs(ts - tsteps[-1]) < tol:
             tsteps[-1] = ts
         else:
             tsteps.append(ts)
+
+    if len(tsteps) < len(tsteps2):
+        log.debug("[join]   Merged %d near-duplicate timestep(s)",
+                  len(tsteps2) - len(tsteps))
 
     if output_timestep > 1:
         tsteps = [
@@ -273,62 +315,77 @@ def _join_file(
             if int(ts) - int(ts / output_timestep) * output_timestep < 1
         ]
 
-    log.debug("[join]   Global timesteps: %d  (t=%.0f … %.0f)",
-              len(tsteps), tsteps[0] if tsteps else 0, tsteps[-1] if tsteps else 0)
+    if not tsteps:
+        log.warning("[join]   All timesteps filtered out for %s — nothing to write.",
+                    out_path.name)
+        nc_out.close()
+        return True
 
-    # Match parts to global timesteps
+    log.debug("[join]   Global timesteps: %d  (t=%.0f … %.0f)",
+              len(tsteps), tsteps[0], tsteps[-1])
+
+    # Map every part timestep to its global index.
+    #
+    # The previous implementation assumed each part covered a *contiguous*
+    # run of the global timestep list and wrote it with a single slice
+    # assignment. That assumption breaks whenever another part contributes
+    # a timestep that falls between two of this part's timesteps — e.g. a
+    # re-run restart cycle whose output times are offset from the cycle it
+    # replaces. The slice was then longer than the data and netCDF4 raised
+    # "size of data array does not conform to slice". An explicit
+    # (source index → global index) map removes the assumption entirely.
+    tarr = np.asarray(tsteps, dtype=float)
     for part in pinfo:
-        ptsteps = pinfo[part]["ptsteps"]
-        for tstep in ptsteps:
-            if tstep in tsteps:
-                break
-        pinfo[part]["ptsmin"] = ptsteps.index(tstep) + pinfo[part]["offset"]
-        pinfo[part]["tsmin"]  = tsteps.index(tstep)
-        for tstep in ptsteps[ptsteps.index(tstep):]:
-            if tstep not in tsteps:
-                break
-        if tstep not in tsteps:
-            tstep = ptsteps[ptsteps.index(tstep) - 1]
-        pinfo[part]["ptsmax"] = ptsteps.index(tstep) + pinfo[part]["offset"]
-        pinfo[part]["tsmax"]  = tsteps.index(tstep)
+        pi      = pinfo[part]
+        ptsteps = pi["ptsteps"]
+        matched: dict = {}          # global index → source index (last wins)
+        n_drop  = 0
+        for j, ts in enumerate(ptsteps):
+            k = int(np.argmin(np.abs(tarr - ts)))
+            if abs(tarr[k] - ts) < tol:
+                matched[k] = j + pi["offset"]
+            else:
+                n_drop += 1
+        pi["tmap"] = sorted((src, dst) for dst, src in matched.items())
+        if n_drop:
+            log.debug("[join]   %s: %d timestep(s) not in global list (filtered)",
+                      Path(part).name, n_drop)
 
     # --- Phase 3: copy data ------------------------------------------------
     log.debug("[join]   Phase 3/3: copying data from %d part(s)", len(pinfo))
     for ip, part in enumerate(pinfo):
-        pi = pinfo[part]
-        n_ts = pi["ptsmax"] - pi["ptsmin"] + 1
-        log.debug("[join]   Part %d/%d: %s  ts[%d:%d] → global[%d:%d]  (%d timesteps)",
+        pi   = pinfo[part]
+        tmap = pi["tmap"]
+        if not tmap:
+            log.warning("[join]   Part %s contributes no timesteps — skipping.",
+                        Path(part).name)
+            continue
+        log.debug("[join]   Part %d/%d: %s  → %d timestep(s), global[%d…%d]",
                   ip + 1, len(pinfo), Path(pi["file"]).name,
-                  pi["ptsmin"], pi["ptsmax"], pi["tsmin"], pi["tsmax"], n_ts)
+                  len(tmap), tmap[0][1], tmap[-1][1])
         ncp   = Dataset(pi["file"], "r", format="NETCDF4")
         pvars = ncp.variables
 
-        times = pvars["time"][pi["ptsmin"]:pi["ptsmax"] + 1] + pi["ptshift"]
-        nc_vars["time"][pi["tsmin"]:pi["tsmax"] + 1] = times
+        for src, dst in tmap:
+            nc_vars["time"][dst] = float(pvars["time"][src]) + pi["ptshift"]
 
         for v in vcp:
+            if v == "time":
+                continue        # already written above, with ptshift applied
             if v not in pvars:
                 log.warning("[join]   Variable %s not in part %s — skipping.",
                             v, Path(part).name)
                 continue
-            nd     = len(nc_vars[v].dimensions)
-            vs     = nc_vars[v].shape
-            offset = pi["ptsmin"] - pi["tsmin"]
-            for i2 in range(pi["tsmin"], pi["tsmax"] + 1):
-                if nd == 1:
-                    nc_vars[v][i2] = pvars[v][i2 + offset]
-                elif nd == 2:
-                    nc_vars[v][i2, :] = pvars[v][i2 + offset, 0:vs[1]]
-                elif nd == 3:
-                    nc_vars[v][i2, :, :] = pvars[v][i2 + offset, 0:vs[1], 0:vs[2]]
-                elif nd == 4:
-                    nc_vars[v][i2, :, :, :] = pvars[v][i2 + offset, 0:vs[1], 0:vs[2], 0:vs[3]]
-                elif nd == 5:
-                    nc_vars[v][i2, :, :, :, :] = pvars[v][i2 + offset, 0:vs[1], 0:vs[2], 0:vs[3], 0:vs[4]]
-                elif nd == 6:
-                    nc_vars[v][i2, :, :, :, :, :] = pvars[v][i2 + offset, 0:vs[1], 0:vs[2], 0:vs[3], 0:vs[4], 0:vs[5]]
-                else:
-                    log.warning("[join]   Too many dimensions in variable %s — skipping.", v)
+            nd = len(nc_vars[v].dimensions)
+            vs = nc_vars[v].shape
+            if nd > 6:
+                log.warning("[join]   Too many dimensions in variable %s — skipping.", v)
+                continue
+            if not _shape_ok(v, nc_vars[v], pvars[v], Path(part).name, log):
+                continue
+            sl = tuple(slice(0, vs[k]) for k in range(1, nd))
+            for src, dst in tmap:
+                nc_vars[v][(dst,) + sl] = pvars[v][(src,) + sl]
         ncp.close()
 
     nc_out.close()
@@ -418,6 +475,7 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger,
             offset_min      = step_cfg.offset_min,
             part_timeshift  = step_cfg.part_timeshift,
             output_timestep = step_cfg.output_timestep,
+            merge_tol       = step_cfg.merge_tol,
             complevel       = step_cfg.complevel,
             overwrite       = cfg.overwrite or force,
             dry_run         = dry_run,

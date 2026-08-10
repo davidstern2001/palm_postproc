@@ -105,6 +105,12 @@ steps:
     part_timeshift:  0
     output_timestep: 0
 
+    # Timesteps closer together than this (seconds) are treated as the same
+    # instant and merged, with the later part winning. Leave blank for auto
+    # (a quarter of the median output interval), which absorbs the sub-second
+    # differences PALM writes at restart-cycle boundaries.
+    #merge_tol: 0.5
+
     # Join step uses its own complevel (default 6, original script default).
     complevel: 6
 
