@@ -106,9 +106,12 @@ steps:
     output_timestep: 0
 
     # Timesteps closer together than this (seconds) are treated as the same
-    # instant and merged, with the later part winning. Leave blank for auto
-    # (a quarter of the median output interval), which absorbs the sub-second
-    # differences PALM writes at restart-cycle boundaries.
+    # instant and merged; the higher-numbered part wins, for both the data
+    # and the recorded time. Leave blank for auto (a quarter of the median
+    # output interval, capped at 1 s), which absorbs the sub-second
+    # differences PALM writes at restart-cycle boundaries. Raise it only if
+    # your cycles disagree by more than that, and check the joined time
+    # axis afterwards -- merging two genuine records loses one of them.
     #merge_tol: 0.5
 
     # Join step uses its own complevel (default 6, original script default).

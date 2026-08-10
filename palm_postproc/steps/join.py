@@ -61,14 +61,28 @@ def _partnames(
     return parts
 
 
+# Upper bound (seconds) on the automatically derived timestep merge
+# tolerance. Restart-boundary jitter is sub-second; anything wider is a
+# real timestep and must not be merged without an explicit merge_tol.
+AUTO_MERGE_TOL_MAX = 1.0
+
+
 def _merge_tolerance(tsteps: list, output_timestep: int,
                      merge_tol: float | None) -> float:
     """
     Tolerance (seconds) within which two timesteps count as the same instant.
 
     Explicit config wins. Otherwise output_timestep/2 if set, else a quarter
-    of the median output interval, which absorbs the sub-second differences
-    PALM writes at restart-cycle boundaries without merging genuine steps.
+    of the median output interval, capped at AUTO_MERGE_TOL_MAX.
+
+    The cap matters. The jitter this is meant to absorb is the sub-second
+    difference PALM writes at restart-cycle boundaries, so a tolerance of
+    order one second is all that is ever needed. A quarter of the median
+    interval alone is far too generous on an irregular time axis — on
+    t = [0, 100, 3600, 7200] it comes out at 887 s and would silently merge
+    the 0 s and 100 s records into one. Under-merging only leaves a
+    cosmetic near-duplicate record; over-merging destroys data, so this
+    errs low and leaves merge_tol for anything wider.
     """
     if merge_tol is not None:
         return float(merge_tol)
@@ -81,7 +95,7 @@ def _merge_tolerance(tsteps: list, output_timestep: int,
     diffs = diffs[diffs > 0]
     if diffs.size == 0:
         return 1e-6
-    return max(float(np.median(diffs)) * 0.25, 1e-6)
+    return max(min(float(np.median(diffs)) * 0.25, AUTO_MERGE_TOL_MAX), 1e-6)
 
 
 def _shape_ok(vn, dst_var, src_var, partname: str, log: logging.Logger) -> bool:

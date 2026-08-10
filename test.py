@@ -273,8 +273,13 @@ def unit_checks(failures):
 
     check(_merge_tolerance([0.0, 3600.0, 7200.0], 1800, None) == 900.0,
           "_merge_tolerance honours output_timestep", failures)
-    check(_merge_tolerance([0.0, 3600.0, 7200.0], 0, None) == 900.0,
-          "_merge_tolerance auto = 1/4 median interval", failures)
+    check(_merge_tolerance([0.0, 3600.0, 7200.0], 0, None) == 1.0,
+          "_merge_tolerance auto is capped at 1 s", failures)
+    check(_merge_tolerance([0.0, 2.0, 4.0], 0, None) == 0.5,
+          "_merge_tolerance auto = 1/4 median below the cap", failures)
+    # An irregular axis must not merge two genuine records 100 s apart.
+    check(_merge_tolerance([0.0, 100.0, 3600.0, 7200.0], 0, None) < 100.0,
+          "_merge_tolerance does not over-merge an irregular axis", failures)
     check(_merge_tolerance([0.0, 3600.0], 1800, 5.0) == 5.0,
           "_merge_tolerance explicit override wins", failures)
     check(_merge_tolerance([42.0], 0, None) > 0.0,

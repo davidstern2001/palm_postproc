@@ -29,8 +29,11 @@
   default `output_timestep: 0` compares against zero and therefore never
   fires, so the sub-second differences PALM writes at restart-cycle
   boundaries survived into the joined file as separate records. The
-  tolerance now falls back to a quarter of the median output interval, and
-  can be set explicitly with the new `steps.join.merge_tol` key.
+  tolerance now falls back to a quarter of the median output interval,
+  capped at 1 s, and can be set explicitly with the new
+  `steps.join.merge_tol` key. The cap keeps an irregular time axis safe:
+  a quarter of the median alone comes out at 887 s on
+  `t = [0, 100, 3600, 7200]` and would merge two genuine records.
 
 - `time` is no longer written twice per part. It was written once with
   `part_timeshift` applied and then again, unshifted, by the generic
@@ -45,6 +48,15 @@
 - A file whose timesteps are all removed by the `output_timestep` filter
   closes cleanly with a warning instead of raising `IndexError` on an empty
   timestep list.
+
+- When two parts hold the same instant, the later part now wins for the
+  *value* of `time` as well as for the data, so the two can no longer come
+  from different parts.
+
+- A timestamp repeated *within* one part now resolves to the last of the
+  repeats rather than the first, matching the cross-part rule. This is the
+  one behaviour change here that is not a bug fix; PALM should not emit
+  such a file, but if yours does, the record kept is now the later one.
 
 **Config**
 
