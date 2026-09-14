@@ -63,6 +63,15 @@ def _slice_by_z(ds: xr.Dataset, z_max: float, z_coord: str) -> xr.Dataset:
                 f"Available range: {ds[c].min().item():.1f}"
                 f" to {ds[c].max().item():.1f}"
             )
+    # Record the cut. A z-sliced file is indistinguishable from a full one
+    # by inspection, so a downstream tool that derives its own level range
+    # from nz/dz (palm2gis does) silently re-cuts an already-cut axis and
+    # returns fewer levels than asked for, with no warning anywhere. These
+    # attributes let it notice.
+    sliced.attrs["palm_postproc_z_max"] = float(z_max)
+    sliced.attrs["palm_postproc_z_coord"] = str(z_coord)
+    sliced.attrs["palm_postproc_z_levels"] = ",".join(
+        f"{c}:{ds.sizes[c]}->{sliced.sizes[c]}" for c in coords)
     return sliced
 
 

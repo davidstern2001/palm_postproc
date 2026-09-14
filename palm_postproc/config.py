@@ -77,6 +77,14 @@ _DEFAULTS: dict = {
             # PALM fidelity and standard CF units. Set `celsius: true`
             # explicitly to keep the old behaviour.
             "celsius":  False,
+            # Explicit temperature scale for variables whose `units`
+            # attribute cannot be read. Maps a variable name to "K" or
+            # "C", e.g. {ta_2m*_xy: C}. Needed rarely: PALM's own unit
+            # strings are recognised, including the truncated "degree_"
+            # it writes from a fixed-length buffer. The step RAISES on an
+            # unrecognised unit rather than guessing, so this is the
+            # escape hatch when a new PALM version writes something new.
+            "temperature_units": {},
         },
     },
 }
@@ -142,6 +150,7 @@ class CoordConfig:
     crs:      str
     utm_zone: Optional[int]
     celsius:  bool
+    temperature_units: dict
 
 
 @dataclass
@@ -417,6 +426,7 @@ def load(path: Union[str, Path]) -> Config:
         crs      = str(s["coord"]["crs"]),
         utm_zone = s["coord"].get("utm_zone"),
         celsius  = bool(s["coord"].get("celsius", False)),
+        temperature_units = dict(s["coord"].get("temperature_units") or {}),
     )
     # The celsius default flipped from true to false in 0.4.0. A config
     # written before that says nothing about it and would silently start

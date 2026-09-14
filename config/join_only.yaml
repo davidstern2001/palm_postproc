@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Join only: produce the input palm2gis reads.
+# ---------------------------------------------------------------------------
+# palm2gis needs RAW PALM geometry and units - it applies origin_x/origin_y,
+# origin_z and the unit handling itself. `join` is the one step here that
+# preserves all of that while still stitching the restart-cycle parts into
+# one file per product, so OUTPUT_join is the directory to point it at.
+#
+# OUTPUT_coord must NEVER be given to palm2gis: coordinates and units would
+# be applied twice.
+#
+# `filelist: all` picks up every product, the surface output included, which
+# is what the palm2gis `surfaces` stage needs - splitvar and everything after
+# it skip non-_av_xy/_av_3d files entirely, so a surface file never appears
+# downstream of OUTPUT_join.
+#
+#   python run_postproc.py -c config/join_only.yaml
+#
+# Then, in the palm2gis config:
+#   voxel.file_from:    ./OUTPUT_join/<case>_av_3d_N02.nc
+#   wind.file_from:     ./OUTPUT_join/<case>_av_3d_N02.nc
+#   surfaces.file_from: ./OUTPUT_join/<case>_av_surf_N02.nc
+# ---------------------------------------------------------------------------
+
+case: holesovice_stern_adapt
+
+paths:
+  base: /home/stern/palm/model.git/build/JOBS
+
+overwrite: false
+
+steps:
+  join:
+    enabled: true
+    convention: filenum
+    filelist: all
+
+  # Everything below belongs to the ANALYSIS branch. Leave it off when the
+  # only consumer is palm2gis; turn it back on to also produce OUTPUT_coord
+  # for QGIS/Python work. Either way OUTPUT_join survives, so both branches
+  # can come from one run.
+  splitvar:  {enabled: false}
+  splitz:    {enabled: false}
+  splittime: {enabled: false}
+  coord:     {enabled: false}

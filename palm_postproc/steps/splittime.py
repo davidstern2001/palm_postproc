@@ -59,7 +59,8 @@ def _select_timesteps(
     t_values = ds["time"].values.astype(float)
 
     if timestep_secs is None:
-        return ds.isel(time=slice(t_start, t_end + 1))
+        out = ds.isel(time=slice(t_start, t_end + 1))
+        return _stamp_time_window(out, ds, t_start, t_end, None)
 
     t0_val  = t_values[t_start]
     indices = []
@@ -73,7 +74,27 @@ def _select_timesteps(
         raise ValueError(
             f"No timesteps match interval {timestep_secs:.0f}s in range [{t_start}, {t_end}]."
         )
-    return ds.isel(time=indices)
+    return _stamp_time_window(ds.isel(time=indices), ds,
+                              t_start, t_end, timestep_secs)
+
+
+def _stamp_time_window(out, src, t_start: int, t_end: int,
+                       timestep_secs: Optional[float]):
+    """Record which time window was kept, for the same reason as splitz.
+
+    A time-sliced file looks exactly like a full one, so anything that
+    resolves a window against the file's own axis gets a different answer
+    depending on whether this step already ran.
+    """
+    out.attrs["palm_postproc_time_start"] = int(t_start)
+    out.attrs["palm_postproc_time_end"] = int(t_end)
+    out.attrs["palm_postproc_time_records"] = f"{src.sizes['time']}->{out.sizes['time']}"
+    if timestep_secs is not None:
+        out.attrs["palm_postproc_timestep"] = float(timestep_secs)
+    if out.sizes["time"]:
+        tv = out["time"].values
+        out.attrs["palm_postproc_time_range"] = f"{float(tv[0]):.1f},{float(tv[-1]):.1f}"
+    return out
 
 
 def _process_file(

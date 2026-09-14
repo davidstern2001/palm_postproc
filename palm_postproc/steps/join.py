@@ -110,6 +110,77 @@ def _shape_ok(vn, dst_var, src_var, partname: str, log: logging.Logger) -> bool:
     return True
 
 
+# Variables larger than this are not compared across parts. Nothing PALM
+# writes as a time-invariant coordinate comes close (the largest is the
+# surface element list, order 1e5), so the cap only ever skips the bulk
+# static fields of a _topo_surf file, which is single-part anyway.
+GEOM_CHECK_MAX_SIZE = 5_000_000
+
+
+def _arrays_equal(a, b) -> bool:
+    """Value-and-mask comparison that tolerates NaN and masked entries."""
+    ma, mb = np.ma.getmaskarray(a), np.ma.getmaskarray(b)
+    if ma.shape != mb.shape or not np.array_equal(ma, mb):
+        return False
+    da, db = np.ma.getdata(a), np.ma.getdata(b)
+    if da.shape != db.shape:
+        return False
+    if da.dtype.kind == "f" and db.dtype.kind == "f":
+        return np.array_equal(da, db, equal_nan=True)
+    return np.array_equal(da, db)
+
+
+def _check_part_geometry(parts: list[str], log: logging.Logger) -> str | None:
+    """Verify every part describes the SAME grid / surface elements.
+
+    Phase 1 copies all time-invariant variables from parts[0] alone and
+    never revisits them; Phase 3 then appends every part's data along
+    time. That is correct for restart-cycle parts, which differ only in
+    the times they cover. It is silently wrong for parts that hold a
+    different *piece of space* — a spatially decomposed surface output,
+    say — because parts[0]'s xs/ys/zs would be paired with another part's
+    values. Nothing downstream can detect that: the file is structurally
+    valid and every check passes. So it has to be caught here.
+
+    Returns None when the parts agree, or a message naming the first
+    variable that does not.
+    """
+    if len(parts) < 2:
+        return None
+
+    with Dataset(parts[0], "r", format="NETCDF4") as nc0:
+        ref_names = [
+            vn for vn, v in nc0.variables.items()
+            if not v.dimensions or v.dimensions[0] != "time"
+        ]
+        ref = {}
+        for vn in ref_names:
+            v = nc0.variables[vn]
+            if v.size > GEOM_CHECK_MAX_SIZE:
+                log.debug("[join]   Variable %s has %d elements — too large to "
+                          "compare across parts, skipping the check for it.",
+                          vn, v.size)
+                continue
+            ref[vn] = v[...]
+
+    if not ref:
+        return None
+
+    log.debug("[join]   Comparing %d time-invariant variable(s) across %d part(s): %s",
+              len(ref), len(parts), ", ".join(sorted(ref)))
+
+    for part in parts[1:]:
+        with Dataset(part, "r", format="NETCDF4") as ncp:
+            for vn, ref_val in ref.items():
+                if vn not in ncp.variables:
+                    return (f"part {Path(part).name} is missing the time-invariant "
+                            f"variable '{vn}' that {Path(parts[0]).name} defines")
+                if not _arrays_equal(ref_val, ncp.variables[vn][...]):
+                    return (f"time-invariant variable '{vn}' differs between "
+                            f"{Path(parts[0]).name} and {Path(part).name}")
+    return None
+
+
 def _nc_copy_structure(
     nc_in:     Dataset,
     nc_out:    Dataset,
@@ -168,6 +239,34 @@ def _nc_copy_structure(
         return False
 
 
+def _stamp_join(nc_out: Dataset, cfg, cfg_hash: str, parts: list[str]) -> None:
+    """Attach provenance attributes to a joined file, CF style.
+
+    `history` is appended to, never replaced, so PALM's own history
+    survives. `palm_postproc_stage` marks this as join output: coord
+    output must never reach palm2gis, and a positive marker is a better
+    test than guessing from what a file does not contain.
+    """
+    from ..utils import provenance_attrs
+    from .. import __version__
+
+    attrs = provenance_attrs(cfg, cfg_hash)
+    attrs["palm_postproc_stage"] = "join"
+    attrs["palm_postproc_source"] = os.pathsep.join(
+        Path(p).name for p in parts)
+    attrs["palm_postproc_n_parts"] = len(parts)
+
+    line = (f"{attrs['palm_postproc_processed']}: palm_postproc "
+            f"{__version__}: {attrs['palm_postproc_command']}")
+    existing = ""
+    if "history" in nc_out.ncattrs():
+        existing = str(nc_out.getncattr("history")).rstrip()
+
+    for k, v in attrs.items():
+        nc_out.setncattr(k, v)
+    nc_out.setncattr("history", f"{existing}\n{line}".strip() if existing else line)
+
+
 def _join_file(
     i:              int,
     n:              int,
@@ -186,6 +285,10 @@ def _join_file(
     overwrite:      bool,
     dry_run:        bool,
     log:            logging.Logger,
+    # Optional so a caller that only wants the join mechanics (the test
+    # harness) need not build a Config just to stamp provenance.
+    cfg:            Config | None = None,
+    cfg_hash:       str = "",
 ) -> bool:
     """
     Join all parts of one PALM output file into a single NetCDF.
@@ -215,6 +318,20 @@ def _join_file(
     log.info("%s %s", prefix, out_path.name)
     t0 = time.monotonic()
 
+    # Fail before writing anything, not halfway through.
+    mismatch = _check_part_geometry(parts, log)
+    if mismatch:
+        log.error(
+            "[join]   %s.\n"
+            "[join]   Join stitches parts along TIME and takes every other "
+            "variable from the first part, which is only valid for restart-"
+            "cycle parts covering the same grid. These parts describe "
+            "different elements, so joining them would pair one part's "
+            "geometry with another part's data. Spatially decomposed output "
+            "is not supported — join the PALM run's cycles, not its "
+            "subdomains.", mismatch)
+        return False
+
     Path(finalpath).mkdir(parents=True, exist_ok=True)
 
     # --- Phase 1: copy structure -------------------------------------------
@@ -230,6 +347,17 @@ def _join_file(
         nc_in.close()
     else:
         nc_out = Dataset(fout, "a", format="NETCDF4")
+
+    # Provenance, written here so every exit path below carries it.
+    #
+    # An OUTPUT_join directory used to be the one anonymous output of this
+    # tool: the filename said which PALM file it came from and nothing
+    # about which config or which code produced it. It is also the
+    # directory palm2gis reads, and `palm_postproc_stage` lets palm2gis
+    # confirm a file is join output rather than infer it from the absence
+    # of coord's fingerprints.
+    if cfg is not None:
+        _stamp_join(nc_out, cfg, cfg_hash, parts)
 
     # Identify time-dependent variables
     nc_vars = nc_out.variables
@@ -320,8 +448,14 @@ def _join_file(
             tsteps.append(ts)
 
     if len(tsteps) < len(tsteps2):
-        log.debug("[join]   Merged %d near-duplicate timestep(s)",
-                  len(tsteps2) - len(tsteps))
+        # Reported at info: merging collapses two records into one, which
+        # changes the time axis palm2gis will read. On an hourly surface
+        # file the auto tolerance is capped at 1 s, so anything merged
+        # here is restart-boundary jitter; anything NOT merged that should
+        # have been shows up downstream as a near-duplicate timestep.
+        log.info("[join]   Merged %d near-duplicate timestep(s) "
+                 "within %g s of each other",
+                 len(tsteps2) - len(tsteps), tol)
 
     if output_timestep > 1:
         tsteps = [
@@ -471,6 +605,12 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger,
     for f in filelist:
         log.info("[join]   %s", f)
 
+    # join_config_hash, not config_hash: join's outputs are the INPUT to
+    # the post-join chain, so the digest that identifies them is the one
+    # built from join's own settings.
+    from ..state import join_config_hash
+    cfg_h = join_config_hash(cfg)
+
     t_step = time.monotonic()
     failures = 0
     n = len(filelist)
@@ -494,6 +634,8 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger,
             overwrite       = cfg.overwrite or force,
             dry_run         = dry_run,
             log             = log,
+            cfg             = cfg,
+            cfg_hash        = cfg_h,
         )
         if not ok:
             failures += 1

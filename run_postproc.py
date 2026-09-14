@@ -4,14 +4,14 @@ run_postproc.py — palm_postproc entry point
 ============================================
 Usage
 -----
-  python run_postproc.py -c configs/holesovice_now.yaml
-  python run_postproc.py -c configs/holesovice_now.yaml --dry-run
-  python run_postproc.py -c configs/holesovice_now.yaml -v
-  python run_postproc.py -c configs/holesovice_now.yaml -q
-  python run_postproc.py -c configs/holesovice_now.yaml --only coord
-  python run_postproc.py -c configs/holesovice_now.yaml --only splitvar splitz
-  python run_postproc.py -c configs/holesovice_now.yaml --workers 4
-  python run_postproc.py -c configs/holesovice_now.yaml --log-file run.log
+  python run_postproc.py -c config/holesovice_now.yaml
+  python run_postproc.py -c config/holesovice_now.yaml --dry-run
+  python run_postproc.py -c config/holesovice_now.yaml -v
+  python run_postproc.py -c config/holesovice_now.yaml -q
+  python run_postproc.py -c config/holesovice_now.yaml --only coord
+  python run_postproc.py -c config/holesovice_now.yaml --only splitvar splitz
+  python run_postproc.py -c config/holesovice_now.yaml --workers 4
+  python run_postproc.py -c config/holesovice_now.yaml --log-file run.log
 """
 
 import argparse

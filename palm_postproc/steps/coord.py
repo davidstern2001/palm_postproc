@@ -33,13 +33,33 @@ _TRANSFORMED_SUFFIX = ".utm"
 # ---------------------------------------------------------------------------
 # Temperature variables
 # ---------------------------------------------------------------------------
-# Kept deliberately IDENTICAL to palm2gis/steps/thermo.py::TEMP_PREFIXES.
-# The two tools are separate packages by design and share no code, so this
-# list is the one thing that has to be edited in both places at once; the
-# README records that. Covering only theta*/tsurf* (as this step used to)
-# left ta_2m* and t_surf in kelvin next to °C neighbours.
+# Kept deliberately IDENTICAL to palm2gis/steps/thermo.py. The two tools
+# are separate packages by design and share no code, so this block is the
+# one thing that has to be edited in both places at once; the README
+# records that.
+#
+# TEMP_PREFIXES only IDENTIFIES temperature variables. It does NOT say
+# what scale they are on, and assuming kelvin here was a real bug: PALM's
+# reference tables give `ta` (and `ta_2m*`) in DEGREES CELSIUS, while
+# `theta`, `tsurf*` and `t_surf` are kelvin. Blindly subtracting 273.15
+# from an already-Celsius `ta` produced voxels at -253 °C. The scale now
+# comes from the `units` attribute; see temperature_scale().
 TEMP_PREFIXES = ("theta", "tsurf", "t_surf", "ta")
 K0 = 273.15
+
+# Potential temperature is exempt from `celsius`. It is a kelvin-defined
+# quantity and "potential temperature in °C" is a confusing thing to hand
+# to anyone; `celsius` governs actual temperatures only.
+CELSIUS_EXEMPT_PREFIXES = ("theta",)
+
+# Unit strings, lowercased and stripped. The prefix entries matter: PALM
+# writes its units into a fixed-length character buffer and real files
+# come out carrying "degree_" — truncated mid-word — so an exact-match
+# list rejects the very data this is meant to handle.
+_KELVIN_UNITS = ("k", "kelvin", "degree_k", "degrees_k", "deg_k")
+_CELSIUS_UNITS = ("degc", "deg_c", "degree_c", "degrees_c",
+                  "celsius", "\N{DEGREE SIGN}c", "c")
+_CELSIUS_PREFIXES = ("degree", "degrees", "deg")
 
 # PALM marks masked/undefined points (inside buildings, above the
 # terrain-following domain top) with a sentinel such as -9999.0. Subtracting
@@ -47,9 +67,51 @@ K0 = 273.15
 _COMMON_FILL_VALUES = (-9999.0, -999999.0, -9999.9)
 
 
+class TemperatureUnitError(RuntimeError):
+    """Raised when a temperature variable's scale cannot be determined."""
+
+
 def is_temperature(name: str) -> bool:
     """True when *name* is a temperature variable by PALM naming."""
     return str(name).lower().startswith(TEMP_PREFIXES)
+
+
+def is_celsius_exempt(name: str) -> bool:
+    """True when *name* stays in kelvin regardless of the celsius setting."""
+    return str(name).lower().startswith(CELSIUS_EXEMPT_PREFIXES)
+
+
+def temperature_scale(units, name: str = "", override: dict | None = None):
+    """Return 'K' or 'C' for a temperature variable.
+
+    Resolution order: explicit config override, then the `units` string.
+    There is deliberately NO fallback that guesses from the values. A
+    temperature silently off by 273.15 still looks like a temperature,
+    which is exactly how the -253 °C voxels survived a release; failing
+    loudly is cheaper than the alternative.
+
+    Raises TemperatureUnitError when neither source resolves.
+    """
+    if override:
+        for key, scale in override.items():
+            if str(name).lower() == str(key).lower():
+                s = str(scale).strip().upper()[:1]
+                if s in ("K", "C"):
+                    return s
+                raise TemperatureUnitError(
+                    f"temperature_units override for '{name}' is {scale!r}; "
+                    f"expected 'K' or 'C'")
+
+    u = str(units or "").strip().lower().replace(" ", "")
+    if u in _KELVIN_UNITS:
+        return "K"
+    if u in _CELSIUS_UNITS or u.startswith(_CELSIUS_PREFIXES):
+        return "C"
+
+    raise TemperatureUnitError(
+        f"cannot determine the temperature scale of '{name}': units="
+        f"{units!r}. Add an entry to steps.coord.temperature_units "
+        f"(e.g. {{{name}: C}}) to state it explicitly.")
 
 
 def kelvin_to_celsius_da(da: xr.DataArray, fill_val=None) -> xr.DataArray:
@@ -67,6 +129,22 @@ def kelvin_to_celsius_da(da: xr.DataArray, fill_val=None) -> xr.DataArray:
         for fv in _COMMON_FILL_VALUES:
             valid = valid & (abs(da - fv) > 1e-3)
     return xr.where(valid, da - K0, da)
+
+
+def celsius_to_kelvin_da(da: xr.DataArray, fill_val=None) -> xr.DataArray:
+    """°C -> K on the VALID entries of *da* only, lazily.
+
+    The mirror of kelvin_to_celsius_da, needed now that `celsius: false`
+    means "emit kelvin" rather than "do nothing": PALM's own `ta` arrives
+    in °C, so producing a kelvin file requires converting it.
+    """
+    valid = da.notnull() & xr.apply_ufunc(np.isfinite, da, dask="allowed")
+    if fill_val is not None:
+        valid = valid & (da != fill_val)
+    else:
+        for fv in _COMMON_FILL_VALUES:
+            valid = valid & (abs(da - fv) > 1e-3)
+    return xr.where(valid, da + K0, da)
 
 
 # ---------------------------------------------------------------------------
@@ -407,34 +485,57 @@ def _add_coordinates(
         log.debug("[coord] building WGS84 auxiliary coordinates")
         ds_out = _add_latlon(ds_out, target_crs, log)
 
-    # --- Convert temperature variables (K -> °C) --------------------------
-    # Which variables count as temperatures is defined once, in
-    # TEMP_PREFIXES, and matches palm2gis exactly. It previously covered
-    # only `theta*` and `tsurf*`, so `ta_2m*` and `t_surf` were left in
-    # kelvin and an output directory could mix °C and K variables — a 273 K
-    # trap for anything that plots a directory without checking `units`.
+    # --- Put temperature variables on the requested scale ------------------
+    # `celsius` selects the OUTPUT scale; the source scale is read from
+    # each variable's `units`. Conversion happens only when the two
+    # differ, so an already-Celsius PALM variable (ta, ta_2m*) is left
+    # alone instead of being driven 273.15 below reality. `theta` is
+    # exempt entirely — see CELSIUS_EXEMPT_PREFIXES.
+    target = "C" if coord_cfg.celsius else "K"
     if not coord_cfg.celsius:
-        log.debug("[coord] celsius disabled — temperatures left in kelvin")
+        log.debug("[coord] celsius disabled — temperatures emitted in kelvin")
 
-    for var in (list(ds_out.data_vars) if coord_cfg.celsius else []):
+    overrides = dict(getattr(coord_cfg, "temperature_units", None) or {})
+
+    for var in list(ds_out.data_vars):
         if not is_temperature(var):
             continue
+        if is_celsius_exempt(var):
+            log.debug("[coord] %s: potential temperature, left in kelvin", var)
+            continue
+
         da = ds_out[var]
         fill_val = da.attrs.get("_FillValue", da.encoding.get("_FillValue"))
+        src_units = da.attrs.get("units", da.encoding.get("units"))
+        source = temperature_scale(src_units, var, overrides)
+
+        if source == target:
+            log.debug("[coord] %s: already in %s (units=%r) — not converted",
+                      var, target, src_units)
+            ds_out[var].attrs["palm_postproc_source_units"] = str(src_units or "")
+            ds_out[var].attrs["palm_postproc_output_units"] = str(src_units or "")
+            continue
 
         # Lazy: xr.where keeps dask arrays as dask arrays, so a chunked 3D
         # file is converted chunk by chunk at write time instead of being
         # pulled into memory whole (the previous da.values path materialised
         # the full array twice per variable, defeating the chunking above).
-        converted = kelvin_to_celsius_da(da, fill_val)
+        if source == "K":
+            converted = kelvin_to_celsius_da(da, fill_val)
+            out_units = "degrees_C"
+        else:
+            converted = celsius_to_kelvin_da(da, fill_val)
+            out_units = "K"
 
         ds_out[var] = converted
         ds_out[var].attrs = dict(da.attrs)
-        ds_out[var].attrs["units"] = "degrees_C"
+        ds_out[var].attrs["units"] = out_units
+        ds_out[var].attrs["palm_postproc_source_units"] = str(src_units or "")
+        ds_out[var].attrs["palm_postproc_output_units"] = out_units
         if fill_val is not None:
             ds_out[var].attrs["_FillValue"] = fill_val
-        log.debug("[coord] %s: converted K -> degrees_C "
-                  "(fill/invalid points left untouched)", var)
+        log.info("[coord] %s: converted %s -> %s "
+                 "(fill/invalid points left untouched)", var, source, out_units)
 
     # --- Write CRS metadata -----------------------------------------------
     log.debug("[coord] writing CRS metadata")

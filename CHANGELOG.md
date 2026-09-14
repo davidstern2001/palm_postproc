@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.0
+
+**join can no longer silently corrupt a file**
+
+- Every time-invariant variable is compared across parts before anything is
+  written. Phase 1 takes them from `parts[0]` alone and Phase 3 then appends
+  every part's data along time, which is correct for restart-cycle parts and
+  silently wrong for parts holding a different piece of space: one part's
+  `xs`/`ys`/`zs` paired with another part's values. Nothing downstream could
+  detect it — the file was structurally valid and passed every check. Such a
+  set of parts is now rejected, naming the variable that differs.
+
+**Temperature scale is read from `units`, not guessed from the name**
+
+- PALM writes `ta` and `ta_2m*` in degrees Celsius while `theta`, `tsurf*`
+  and `t_surf*` are kelvin, so `celsius: true` drove them 273.15 below
+  reality. `celsius` now selects the OUTPUT scale, the input scale comes from
+  each variable's `units` (PALM's truncated `"degree_"` included), and
+  conversion runs only when the two differ. `theta` is exempt: potential
+  temperature stays kelvin. An unrecognised unit **raises** rather than being
+  guessed — `steps.coord.temperature_units` is the override.
+
+**Provenance and the palm2gis handoff**
+
+- Joined files carry provenance for the first time — previously an
+  `OUTPUT_join` directory was the one anonymous output of this tool. They are
+  stamped `palm_postproc_stage = "join"`, which palm2gis reads as positive
+  confirmation that a file is safe to consume rather than inferring it from
+  the absence of `coord`'s fingerprints.
+- `splitz` records `palm_postproc_z_max` / `z_coord` / `z_levels` and
+  `splittime` records its window. A cut file is otherwise indistinguishable
+  from a full one, so a consumer deriving its own range from `nz`/`dz`
+  re-cut an already-cut axis with no warning anywhere.
+- `config/join_only.yaml` documents the join-only run that feeds palm2gis.
+- Near-duplicate timestep merges are reported at info with the tolerance
+  used; they change the time axis a consumer will read.
+
+**Other**
+
+- `configs/` renamed to `config/`, matching palm2gis.
+- README: the two tools are no longer described as branches that never
+  consume each other's output. `join` output IS the intended palm2gis feed;
+  `coord` output never is. Adds the directory table and the temperature-scale
+  and vertical-datum conventions.
+
 ## 0.4.1
 
 **Correctness**

@@ -1,6 +1,6 @@
 # palm_postproc configuration template
-# Copy to configs/<your_job>.yaml and edit as needed.
-# Run with: python run_postproc.py -c configs/<your_job>.yaml
+# Copy to config/<your_job>.yaml and edit as needed.
+# Run with: python run_postproc.py -c config/<your_job>.yaml
 
 ##############################################################################
 # 1. IDENTIFICATION

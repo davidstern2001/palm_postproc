@@ -409,11 +409,16 @@ def verify_chain(base, failures):
                       "latitude lands in central Europe", failures)
             var = ds["theta_2m*_xy"]   # '*' is stripped from the
             #                            filename only, not the variable name
-            check(var.attrs.get("units") == "degrees_C",
-                  "temperature units set to degrees_C", failures)
+            # POTENTIAL temperature is exempt from `celsius`: it is a
+            # kelvin-defined quantity, and "potential temperature in
+            # degrees C" is a confusing thing to hand to anyone. Actual
+            # temperatures (ta*, t_surf*, tsurf*) are checked below.
+            check(var.attrs.get("units") == "K",
+                  "theta_2m stays in kelvin (exempt from celsius)",
+                  failures)
             vals = np.asarray(var.values)
-            check(abs(float(np.nanmax(vals)) - (295.0 - 273.15)) < 1e-3,
-                  "kelvin -> degrees C applied to valid cells", failures)
+            check(abs(float(np.nanmax(vals)) - 295.0) < 1e-3,
+                  "theta values are not shifted by 273.15", failures)
             # the NoData corner must survive untouched
             check(abs(float(vals[0, 0, 0]) - FILL) < 1e-3
                   or not np.isfinite(vals[0, 0, 0]),
