@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     verbosity.add_argument("-q", "--quiet", action="store_true",
                            help="WARNING-level logging only.")
     p.add_argument("--log-datetime", action="store_true",
-                   help="Prepend timestamps to log lines.")
+                   help="Full date in timestamps (time-only is the default).")
     p.add_argument("--log-file", type=Path, default=None, metavar="PATH",
                    help=("Also append the log to this file (uncoloured, "
                          "always timestamped). Useful for queued jobs."))
@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    t0 = time.monotonic()
 
     from palm_postproc import __version__
 
@@ -84,15 +85,12 @@ def main() -> int:
     try:
         from palm_postproc.config import load as load_config
         cfg = load_config(args.config)
-    except FileNotFoundError as exc:
-        log.error("%s", exc)
-        return 1
-    except ValueError as exc:
-        log.error("%s", exc)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("Config error: %s", exc)
         return 1
     except Exception as exc:
-        log.error("Unexpected error loading config: %s", exc)
-        log.debug("", exc_info=True)
+        log.error("Config error: %s", exc)
+        log.debug("traceback:", exc_info=True)
         return 1
 
     if not args.verbose and not args.quiet:
@@ -107,8 +105,7 @@ def main() -> int:
             log.error("--workers must be between 1 and 32, got %d", args.workers)
             return 1
         if args.workers != cfg.workers:
-            log.info("Workers overridden on the command line: %d -> %d",
-                     cfg.workers, args.workers)
+            log.info("--workers: %d -> %d", cfg.workers, args.workers)
         cfg.workers = args.workers
 
     # ---- Summary -----------------------------------------------------------
@@ -125,21 +122,14 @@ def main() -> int:
         input_label     = "input dir"
 
     step(log, "Reading configuration")
-    log.info("case: %s", cfg.case)
-    log.info("domain: %s", cfg.domain or "(root)")
+    log.info("case: %s, domain: %s", cfg.case, cfg.domain or "(root)")
     log.info("%s: %s", input_label, effective_input)
-    log.info("complevel: %d", cfg.complevel)
-    log.info("chain mode: %s", cfg.chain)
-    log.info("workers: %d", cfg.workers)
-    log.info("overwrite: %s", cfg.overwrite)
-    log.info("dry run: %s", args.dry_run)
-
-    if args.only:
-        log.info("--only: %s", ", ".join(args.only))
-
-    log.debug("Steps enabled:")
-    for name in _VALID_STEPS:
-        log.debug("  %-10s: %s", name, getattr(cfg.steps, name).enabled)
+    log.debug("complevel %d, chain %s, workers %d, dry run %s",
+              cfg.complevel, cfg.chain, cfg.workers, args.dry_run)
+    log.info("steps: %s", " -> ".join(
+        n for n in _VALID_STEPS if getattr(cfg.steps, n).enabled))
+    if cfg.overwrite:
+        log.warning("overwrite: existing outputs will be REPLACED.")
 
     # ---- Validate input directory -----------------------------------------
     # When join is enabled, validate the raw input; otherwise validate output_join
@@ -153,18 +143,12 @@ def main() -> int:
     if not nc_files:
         # Try without suffix for filenum convention
         all_files = list(check_dir.iterdir())
-        log.warning("No .nc files found in %s (%d items total)",
+        log.warning("No .nc files in %s (%d items total)",
                     check_dir, len(all_files))
     else:
-        log.info("input files: %d file(s) found in %s",
-                 len(nc_files), check_dir.name)
-        for f in nc_files:
-            log.debug("  %s", f.name)
+        log.info("input files: %d in %s", len(nc_files), check_dir.name)
 
     # ---- Disabled step warnings -------------------------------------------
-    disabled = [n for n in _VALID_STEPS if not getattr(cfg.steps, n).enabled]
-    if disabled:
-        log.warning("Disabled steps: %s", ", ".join(disabled))
 
     # ---- --only validation ------------------------------------------------
     only = set(args.only) if args.only else None
@@ -172,12 +156,10 @@ def main() -> int:
         order = list(_VALID_STEPS)
         first = min(order.index(s) for s in only)
         if first > 0:
-            log.warning("--only %s: make sure upstream output directories exist.",
+            log.warning("--only %s: upstream output directories must exist.",
                         " ".join(sorted(only)))
 
     # ---- Run ---------------------------------------------------------------
-    t0 = time.monotonic()
-
     try:
         from palm_postproc.pipeline import run as run_pipeline
         run_pipeline(cfg, dry_run=args.dry_run, only=only)
@@ -186,7 +168,7 @@ def main() -> int:
         return 130
     except Exception as exc:
         log.error("Pipeline failed: %s", exc)
-        log.debug("", exc_info=True)
+        log.debug("traceback:", exc_info=True)
         return 1
 
     step(log, "palm_postproc finished OK ({:.1f}s)",

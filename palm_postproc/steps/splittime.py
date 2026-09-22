@@ -112,7 +112,8 @@ def _process_file(
     ds     = open_dataset(src_path, chunks)
 
     if "time" not in ds.dims:
-        log.warning("[splittime] No time dimension in %s — skipping.", src_path.name)
+        log.warning("[splittime] no time dimension in %s - skipped.",
+                    src_path.name)
         ds.close()
         return True
 
@@ -154,8 +155,8 @@ def _process_file(
 
     if timestep_secs is not None and timestep_secs < min_dt:
         log.warning(
-            "[splittime] Requested interval (%s) is smaller than minimum timestep (%s) "
-            "in %s — no timesteps may match.",
+            "[splittime] interval %s is below the file's timestep %s in %s "
+            "- few or no timesteps may match.",
             fmt_duration(timestep_secs), fmt_duration(min_dt), src_path.name,
         )
 
@@ -170,25 +171,25 @@ def _process_file(
               n_out)
 
     out_path = out_dir / src_path.name
-    if not should_write(out_path, cfg.overwrite, log):
+    if not should_write(out_path, cfg.overwrite, log, "splittime"):
         ds.close()
         return True
 
     if dry_run:
-        log.info("[splittime] [DRY RUN] Would write ~%d timestep(s) from %s → %s",
-                 n_out, src_path.name, out_path.name)
+        log.info("[splittime] would write %s: ~%d timestep(s) (dry run)",
+                 out_path.name, n_out)
         ds.close()
         return True
 
-    log.info("[splittime] Slicing %s → %s ...", src_path.name, out_path.name)
     t0 = time.monotonic()
     try:
         ds_sliced = _select_timesteps(ds, t_start, t_end, timestep_secs)
         write_dataset(ds_sliced, out_path, cfg.complevel)
-        log.info("[splittime]   ✓  %s  (%s)", fmt_size(out_path), fmt_elapsed(t0))
+        log.info("[splittime] wrote %s: %s in %s", out_path.name,
+                 fmt_size(out_path), fmt_elapsed(t0))
         return True
     except Exception as exc:
-        log.error("[splittime] FAILED writing %s: %s", out_path.name, exc)
+        log.error("[splittime] %s failed: %s", out_path.name, exc)
         return False
     finally:
         ds.close()
@@ -226,8 +227,8 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
         # splitz disabled — 3D files are still in output_splitvar
         files_3d = [f for f in sorted(cfg.paths.output_splitvar.glob("*.nc"))
                     if "_av_3d" in f.stem]
-        log.debug("[splittime] 3D source: output_splitvar (splitz disabled, %d file(s))",
-                  len(files_3d))
+        log.debug("[splittime] 3D source: output_splitvar (%d file(s), "
+                  "splitz off)", len(files_3d))
         sources.extend((f, "3D (post-splitvar, splitz disabled)") for f in files_3d)
 
     files_2d = [f for f in sorted(cfg.paths.output_splitvar.glob("*.nc"))
@@ -236,7 +237,7 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
     sources.extend((f, "2D (post-splitvar)") for f in files_2d)
 
     if not sources:
-        log.warning("[splittime] No .nc files found in upstream directories.")
+        log.warning("[splittime] no .nc files in the upstream directories.")
         return
 
     log.info("[splittime] %d file(s) to process", len(sources))
@@ -245,11 +246,10 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
 
     for src_path, label in sources:
-        log.info("[splittime] Processing (%s): %s", label, src_path.name)
+        log.debug("[splittime] %s: %s", label, src_path.name)
         if not _process_file(src_path, out_dir, cfg, dry_run, log):
             failures += 1
 
     if failures:
-        raise RuntimeError(f"[splittime] {failures} file(s) failed — check log above.")
+        raise RuntimeError(f"[splittime] {failures} file(s) failed - see the log above.")
 
-    log.info("[splittime] Done.")

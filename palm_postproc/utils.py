@@ -133,17 +133,18 @@ def fmt_duration(secs: float) -> str:
 # Overwrite guard
 # ---------------------------------------------------------------------------
 
-def should_write(out_path: Path, overwrite: bool, log) -> bool:
+def should_write(out_path: Path, overwrite: bool, log, tag: str = "") -> bool:
     """
     Return True if the file should be written.
     If overwrite=True, always True.
-    If overwrite=False and file exists, log a warning and return False.
+    If overwrite=False and file exists, log "kept (exists)" and return False
+    (the same wording palm2gis uses; `overwrite: true` replaces it).
     """
+    label = f"[{tag}] " if tag else ""
     if not out_path.exists():
         return True
     if overwrite:
-        log.debug("Overwriting existing file: %s", out_path.name)
+        log.debug("%sreplacing %s", label, out_path.name)
         return True
-    log.warning("Output already exists, skipping (set overwrite: true to replace): %s",
-                out_path.name)
+    log.info("%skept (exists): %s", label, out_path.name)
     return False

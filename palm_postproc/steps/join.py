@@ -57,7 +57,7 @@ def _partnames(
         parts.sort()
     elif convention == "singlefile":
         parts = [os.path.join(origpath, origfile + file_suffix)]
-    log.debug("[join]   Parts: %s", [Path(p).name for p in parts])
+    log.debug("[join] parts: %s", [Path(p).name for p in parts])
     return parts
 
 
@@ -103,9 +103,8 @@ def _shape_ok(vn, dst_var, src_var, partname: str, log: logging.Logger) -> bool:
     dshape = dst_var.shape[1:]
     sshape = src_var.shape[1:]
     if len(dshape) != len(sshape) or any(s < d for s, d in zip(sshape, dshape)):
-        log.warning("[join]   Variable %s in %s has shape %s but output needs %s "
-                    "— skipping this variable for this part.",
-                    vn, partname, sshape, dshape)
+        log.warning("[join] %s in %s has shape %s, output needs %s - "
+                    "skipped for this part.", vn, partname, sshape, dshape)
         return False
     return True
 
@@ -157,17 +156,16 @@ def _check_part_geometry(parts: list[str], log: logging.Logger) -> str | None:
         for vn in ref_names:
             v = nc0.variables[vn]
             if v.size > GEOM_CHECK_MAX_SIZE:
-                log.debug("[join]   Variable %s has %d elements — too large to "
-                          "compare across parts, skipping the check for it.",
-                          vn, v.size)
+                log.debug("[join] %s has %d elements - too large to compare "
+                          "across parts, not checked.", vn, v.size)
                 continue
             ref[vn] = v[...]
 
     if not ref:
         return None
 
-    log.debug("[join]   Comparing %d time-invariant variable(s) across %d part(s): %s",
-              len(ref), len(parts), ", ".join(sorted(ref)))
+    log.debug("[join] comparing %d time-invariant variable(s) across %d "
+              "part(s)", len(ref), len(parts))
 
     for part in parts[1:]:
         with Dataset(part, "r", format="NETCDF4") as ncp:
@@ -194,14 +192,12 @@ def _nc_copy_structure(
 
         for dn in nc_in.dimensions:
             d = nc_in.dimensions[dn]
-            log.debug("[join]   Dimension: %-20s size=%s", d.name, d.size)
             if dn == "time":
                 nc_out.createDimension(d.name, None)
             else:
                 nc_out.createDimension(d.name, d.size)
 
         for vn in nc_in.variables:
-            log.debug("[join]   Variable:  %s", vn)
             v = nc_in.variables[vn]
             if len(v.dimensions) == 0:
                 nc_out.createVariable(vn, v.datatype, v.dimensions)
@@ -217,7 +213,7 @@ def _nc_copy_structure(
                 elif len(v.dimensions) == 3:
                     nc_out[vn][:, :, :] = nc_in[vn][:, :, :]
                 else:
-                    log.warning("[join]   Too many dimensions in variable %s", vn)
+                    log.warning("[join] %s has too many dimensions - not copied.", vn)
             elif vn == "time":
                 nc_out.createVariable(vn, v.datatype, v.dimensions)
                 nc_out[vn].setncatts(nc_in[vn].__dict__)
@@ -233,9 +229,11 @@ def _nc_copy_structure(
                         zlib=True, complevel=complevel,
                     )
                 nc_out[vn].setncatts(nc_in[vn].__dict__)
+        log.debug("[join] structure: %d dimension(s), %d variable(s)",
+                  len(nc_in.dimensions), len(nc_in.variables))
         return True
     except Exception as exc:
-        log.error("[join] Error copying NC structure: %s", exc)
+        log.error("[join] could not copy the NetCDF structure: %s", exc)
         return False
 
 
@@ -297,50 +295,45 @@ def _join_file(
     parts = _partnames(origpath, origfile, convention, file_suffix, file_prefix, log)
     parts = [p for p in parts if os.path.isfile(p)]
 
-    prefix = f"[join] [{i:>{len(str(n))}}/{n}]"
-
     if not parts:
-        log.warning("%s No part files found for %s — skipping.", prefix, origfile)
+        log.warning("[join] no part files for %s - skipped.", origfile)
         return True
 
     fout     = os.path.join(finalpath, file_prefix + origfile + file_suffix)
     out_path = Path(fout)
 
-    if not should_write(out_path, overwrite, log):
-        log.info("%s %-45s skipped (up to date)", prefix, out_path.name)
+    if not should_write(out_path, overwrite, log, "join"):
         return True
 
     if dry_run:
-        log.info("%s %-45s [DRY RUN] %d part(s) would be joined",
-                 prefix, out_path.name, len(parts))
+        log.info("[join] would write %s: %d part(s) (dry run)",
+                 out_path.name, len(parts))
         return True
 
-    log.info("%s %s", prefix, out_path.name)
+    log.debug("[join] %d/%d: joining %d part(s) -> %s",
+              i, n, len(parts), out_path.name)
     t0 = time.monotonic()
 
     # Fail before writing anything, not halfway through.
     mismatch = _check_part_geometry(parts, log)
     if mismatch:
-        log.error(
-            "[join]   %s.\n"
-            "[join]   Join stitches parts along TIME and takes every other "
-            "variable from the first part, which is only valid for restart-"
-            "cycle parts covering the same grid. These parts describe "
-            "different elements, so joining them would pair one part's "
-            "geometry with another part's data. Spatially decomposed output "
-            "is not supported — join the PALM run's cycles, not its "
-            "subdomains.", mismatch)
+        # Join stitches parts along TIME and takes every other variable from
+        # the first part - only valid for restart cycles of the same grid.
+        # Spatially decomposed parts would pair one part's geometry with
+        # another part's data.
+        log.error("[join] %s - join restart cycles of one grid, not "
+                  "subdomains.", mismatch)
         return False
 
     Path(finalpath).mkdir(parents=True, exist_ok=True)
 
     # --- Phase 1: copy structure -------------------------------------------
-    log.debug("[join]   Phase 1/3: copying structure from %s", Path(parts[0]).name)
+    log.debug("[join] phase 1/3: copying structure from %s", Path(parts[0]).name)
     if create_new:
         nc_out = Dataset(fout, "w", format="NETCDF4")
         nc_in  = Dataset(parts[0], "r", format="NETCDF4")
         if not _nc_copy_structure(nc_in, nc_out, complevel, log):
-            log.error("[join]   Failed to copy NC structure — aborting %s", out_path.name)
+            log.error("[join] structure copy failed - %s aborted", out_path.name)
             nc_in.close()
             nc_out.close()
             return False
@@ -367,30 +360,29 @@ def _join_file(
             or (len(nc_vars[v].dimensions) == 1 and nc_vars[v].dimensions[0] == "time"))
         and nc_vars[v].dimensions[0] == "time"
     ]
-    log.debug("[join]   Time-dependent variables (%d): %s", len(vcp), vcp)
+    log.debug("[join] time-dependent variables (%d): %s", len(vcp), vcp)
 
     # Some PALM output types (e.g. _topo_surf) are static and carry no
     # 'time' variable at all. Phase 1 already copied everything needed
     # from parts[0]; there is nothing to stitch across parts, so finish here.
     if "time" not in nc_vars:
-        log.debug("[join]   No 'time' variable in %s — static file, structure copy is complete.",
-                  Path(parts[0]).name)
         nc_out.close()
-        log.info("%s   ✓  %s  (%s)  [static, no time dimension]",
-                 prefix, fmt_size(out_path), fmt_elapsed(t0))
+        log.info("[join] wrote %s: static (no time), %s in %s",
+                 out_path.name, fmt_size(out_path), fmt_elapsed(t0))
         return True
 
     # --- Phase 2: analyse timesteps ----------------------------------------
-    log.debug("[join]   Phase 2/3: analysing timesteps in %d part(s)", len(parts))
+    log.debug("[join] phase 2/3: analysing timesteps in %d part(s)", len(parts))
     pinfo: dict = {}
     for ip, part in enumerate(parts):
         ptshift = ip * part_timeshift
-        log.debug("[join]   Part %d/%d: %s  shift=%d", ip + 1, len(parts), Path(part).name, ptshift)
+        log.debug("[join] part %d/%d: %s, shift %d", ip + 1, len(parts),
+                  Path(part).name, ptshift)
         ncp = Dataset(part, "r", format="NETCDF4")
 
         if "time" not in ncp.variables:
-            log.warning("[join]   Part %s has no 'time' variable but %s does — skipping this part.",
-                        Path(part).name, Path(parts[0]).name)
+            log.warning("[join] part %s has no 'time' variable - skipped.",
+                        Path(part).name)
             ncp.close()
             continue
 
@@ -409,7 +401,7 @@ def _join_file(
                 ptsteps.append(ptime[i2].data.item(0))
             for i2 in range(offset + len(ptsteps), len(ptime)):
                 if not ptime[i2].mask:
-                    log.warning("[join]   Discontinuous timestep %d (t=%s) in %s",
+                    log.warning("[join] discontinuous timestep %d (t=%s) in %s",
                                 i2, ptime[i2], Path(part).name)
         if ptsteps:
             pinfo[part] = {
@@ -419,13 +411,13 @@ def _join_file(
                 "offset":  offset,
                 "ptshift": ptshift,
             }
-            log.debug("[join]   → %d valid timesteps  (t=%.0f … %.0f)",
+            log.debug("[join] %d valid timestep(s), t = %.0f .. %.0f",
                       len(ptsteps), ptsteps[0], ptsteps[-1])
         ncp.close()
 
     if not pinfo:
-        log.warning("[join]   No part contributed valid timesteps for %s — "
-                    "output file will have an empty time dimension.", out_path.name)
+        log.warning("[join] no valid timesteps for %s - its time axis is "
+                    "empty.", out_path.name)
         nc_out.close()
         return True
 
@@ -438,7 +430,7 @@ def _join_file(
     # Collapse near-duplicate timesteps (restart-cycle overlaps).
     # The later value wins, matching the original behaviour.
     tol = _merge_tolerance(tsteps2, output_timestep, merge_tol)
-    log.debug("[join]   Timestep merge tolerance: %g s", tol)
+    log.debug("[join] timestep merge tolerance: %g s", tol)
 
     tsteps: list = []
     for ts in tsteps2:
@@ -453,8 +445,7 @@ def _join_file(
         # file the auto tolerance is capped at 1 s, so anything merged
         # here is restart-boundary jitter; anything NOT merged that should
         # have been shows up downstream as a near-duplicate timestep.
-        log.info("[join]   Merged %d near-duplicate timestep(s) "
-                 "within %g s of each other",
+        log.info("[join] merged %d near-duplicate timestep(s) within %g s",
                  len(tsteps2) - len(tsteps), tol)
 
     if output_timestep > 1:
@@ -464,12 +455,12 @@ def _join_file(
         ]
 
     if not tsteps:
-        log.warning("[join]   All timesteps filtered out for %s — nothing to write.",
+        log.warning("[join] all timesteps of %s filtered out - nothing written.",
                     out_path.name)
         nc_out.close()
         return True
 
-    log.debug("[join]   Global timesteps: %d  (t=%.0f … %.0f)",
+    log.debug("[join] %d global timestep(s), t = %.0f .. %.0f",
               len(tsteps), tsteps[0], tsteps[-1])
 
     # Map every part timestep to its global index.
@@ -496,19 +487,19 @@ def _join_file(
                 n_drop += 1
         pi["tmap"] = sorted((src, dst) for dst, src in matched.items())
         if n_drop:
-            log.debug("[join]   %s: %d timestep(s) not in global list (filtered)",
+            log.debug("[join] %s: %d timestep(s) filtered out",
                       Path(part).name, n_drop)
 
     # --- Phase 3: copy data ------------------------------------------------
-    log.debug("[join]   Phase 3/3: copying data from %d part(s)", len(pinfo))
+    log.debug("[join] phase 3/3: copying data from %d part(s)", len(pinfo))
     for ip, part in enumerate(pinfo):
         pi   = pinfo[part]
         tmap = pi["tmap"]
         if not tmap:
-            log.warning("[join]   Part %s contributes no timesteps — skipping.",
+            log.warning("[join] part %s contributes no timesteps - skipped.",
                         Path(part).name)
             continue
-        log.debug("[join]   Part %d/%d: %s  → %d timestep(s), global[%d…%d]",
+        log.debug("[join] part %d/%d: %s -> %d timestep(s), global [%d..%d]",
                   ip + 1, len(pinfo), Path(pi["file"]).name,
                   len(tmap), tmap[0][1], tmap[-1][1])
         ncp   = Dataset(pi["file"], "r", format="NETCDF4")
@@ -521,13 +512,13 @@ def _join_file(
             if v == "time":
                 continue        # already written above, with ptshift applied
             if v not in pvars:
-                log.warning("[join]   Variable %s not in part %s — skipping.",
+                log.warning("[join] %s not in part %s - skipped.",
                             v, Path(part).name)
                 continue
             nd = len(nc_vars[v].dimensions)
             vs = nc_vars[v].shape
             if nd > 6:
-                log.warning("[join]   Too many dimensions in variable %s — skipping.", v)
+                log.warning("[join] %s has too many dimensions - skipped.", v)
                 continue
             if not _shape_ok(v, nc_vars[v], pvars[v], Path(part).name, log):
                 continue
@@ -537,7 +528,9 @@ def _join_file(
         ncp.close()
 
     nc_out.close()
-    log.info("%s   ✓  %s  (%s)", prefix, fmt_size(out_path), fmt_elapsed(t0))
+    log.info("[join] wrote %s: %d part(s), %d time(s), %s in %s",
+             out_path.name, len(pinfo), len(tsteps), fmt_size(out_path),
+             fmt_elapsed(t0))
     return True
 
 
@@ -555,7 +548,7 @@ def _detect_filelist(origpath: str, file_suffix: str, log: logging.Logger) -> li
         stem = re.sub(r"\.\d{3}$", "", stem)
         candidates.add(stem)
     result = sorted(candidates)
-    log.debug("[join] Auto-detected filelist: %s", result)
+    log.debug("[join] auto-detected filelist: %s", result)
     return result
 
 
@@ -583,27 +576,26 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger,
 
     log.info("[join] input dir: %s", origpath)
     log.info("[join] output dir: %s", finalpath)
-    log.info("[join] convention: %s", step_cfg.convention)
-    log.info("[join] suffix: %s", step_cfg.file_suffix or "(none)")
-    log.info("[join] complevel: %d", step_cfg.complevel)
+    log.debug("[join] convention %s, suffix %s, complevel %d",
+              step_cfg.convention, step_cfg.file_suffix or "(none)",
+              step_cfg.complevel)
 
     if not Path(origpath).is_dir():
-        raise RuntimeError(f"[join] Input directory does not exist: {origpath}")
+        raise RuntimeError(f"[join] input directory does not exist: {origpath}")
 
     # Resolve filelist
     filelist = step_cfg.filelist
     if filelist == "all" or filelist is None:
         filelist = _detect_filelist(origpath, step_cfg.file_suffix, log)
         if not filelist:
-            log.warning("[join] No files auto-detected in %s", origpath)
+            log.warning("[join] no files found in %s", origpath)
             return
-        log.info("[join] Auto-detected %d file(s) to join:", len(filelist))
+        source = "auto-detected"
     else:
         filelist = [f.replace("{case}", cfg.case) for f in filelist]
-        log.info("[join] %d file(s) to join (from config):", len(filelist))
-
-    for f in filelist:
-        log.info("[join]   %s", f)
+        source = "from config"
+    log.info("[join] %d file(s) to join (%s)", len(filelist), source)
+    log.debug("[join] files: %s", ", ".join(filelist))
 
     # join_config_hash, not config_hash: join's outputs are the INPUT to
     # the post-join chain, so the digest that identifies them is the one
@@ -640,9 +632,9 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger,
         if not ok:
             failures += 1
 
-    n_ok = n - failures
-    log.info("[join] Done.  %d/%d file(s) joined successfully  (%s)",
-             n_ok, n, fmt_elapsed(t_step))
+    # Counts written and kept files alike; failures raise below.
+    if not failures:
+        log.info("[join] %d file(s) done in %s", n, fmt_elapsed(t_step))
 
     if failures:
-        raise RuntimeError(f"[join] {failures} file(s) failed — check log above.")
+        raise RuntimeError(f"[join] {failures} file(s) failed - see the log above.")

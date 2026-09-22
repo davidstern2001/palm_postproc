@@ -89,14 +89,14 @@ def _process_file(
 
     # splitz only applies to 3D files
     if "_av_3d" not in src_path.stem:
-        log.debug("[splitz] Skipping non-3D file: %s", src_path.name)
+        log.debug("[splitz] skipping non-3D file: %s", src_path.name)
         return True
 
     chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d=True)
     ds     = open_dataset(src_path, chunks)
 
     if z_coord not in ds.coords:
-        log.warning("[splitz] Z coordinate '%s' not found in %s — skipping.",
+        log.warning("[splitz] z coordinate '%s' not in %s - skipped.",
                     z_coord, src_path.name)
         ds.close()
         return True
@@ -107,41 +107,43 @@ def _process_file(
     n_z_out     = int((ds[z_coord] <= z_max).sum().item())
 
     all_z = z_coords_present(ds, z_coord)
-    log.debug("[splitz] %s: z range %.1f–%.1f m, z_max=%.1f → %d/%d levels "
+    log.debug("[splitz] %s: z range %.1f-%.1f m, z_max=%.1f -> %d/%d levels "
               "(coords sliced: %s)",
               src_path.name, z_min_avail, z_max_avail, z_max, n_z_out,
               n_z_total, ", ".join(all_z))
 
     if z_max > z_max_avail:
-        log.warning("[splitz] z_max (%.1f) exceeds file max (%.1f) in %s — all z levels kept.",
+        log.warning("[splitz] z_max %.1f m is above the top (%.1f m) of %s "
+                    "- all levels kept.",
                     z_max, z_max_avail, src_path.name)
     if z_max < z_min_avail:
-        log.error("[splitz] z_max (%.1f) is below minimum z (%.1f) in %s — skipping.",
+        log.error("[splitz] z_max %.1f m is below the bottom (%.1f m) of %s "
+                  "- skipped.",
                   z_max, z_min_avail, src_path.name)
         ds.close()
         return False
 
     out_path = out_dir / src_path.name
-    if not should_write(out_path, cfg.overwrite, log):
+    if not should_write(out_path, cfg.overwrite, log, "splitz"):
         ds.close()
         return True
 
     if dry_run:
-        log.info("[splitz] [DRY RUN] Would slice %s → %d/%d z levels → %s",
-                 src_path.name, n_z_out, n_z_total, out_path.name)
+        log.info("[splitz] would write %s: %d/%d levels (dry run)",
+                 out_path.name, n_z_out, n_z_total)
         ds.close()
         return True
 
-    log.info("[splitz] Slicing %s (z <= %.1f m, %d/%d levels) → %s ...",
-             src_path.name, z_max, n_z_out, n_z_total, out_path.name)
     t0 = time.monotonic()
     try:
         ds_sliced = _slice_by_z(ds, z_max, z_coord)
         write_dataset(ds_sliced, out_path, cfg.complevel)
-        log.info("[splitz]   ✓  %s  (%s)", fmt_size(out_path), fmt_elapsed(t0))
+        log.info("[splitz] wrote %s: z <= %.1f m, %d/%d levels, %s in %s",
+                 out_path.name, z_max, n_z_out, n_z_total, fmt_size(out_path),
+                 fmt_elapsed(t0))
         return True
     except Exception as exc:
-        log.error("[splitz] FAILED writing %s: %s", out_path.name, exc)
+        log.error("[splitz] %s failed: %s", out_path.name, exc)
         return False
     finally:
         ds.close()
@@ -163,12 +165,12 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
 
     nc_files = sorted(input_dir.glob("*.nc"))
     if not nc_files:
-        log.warning("[splitz] No .nc files found in %s", input_dir)
+        log.warning("[splitz] no .nc files found in %s", input_dir)
         return
 
     # Filter to 3D files only for logging purposes
     files_3d = [f for f in nc_files if "_av_3d" in f.stem]
-    log.info("[splitz] %d 3D file(s) to process (out of %d total)",
+    log.info("[splitz] %d of %d file(s) are 3D",
              len(files_3d), len(nc_files))
 
     if not dry_run:
@@ -180,6 +182,5 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
             failures += 1
 
     if failures:
-        raise RuntimeError(f"[splitz] {failures} file(s) failed — check log above.")
+        raise RuntimeError(f"[splitz] {failures} file(s) failed - see the log above.")
 
-    log.info("[splitz] Done.")

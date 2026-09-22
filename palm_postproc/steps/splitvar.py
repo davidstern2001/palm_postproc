@@ -50,7 +50,8 @@ def _resolve_vars(
     [list]                -> return only variables that exist, warn about missing.
     """
     if requested is None or (isinstance(requested, str) and requested.strip().lower() == "none"):
-        log.debug("[splitvar] vars_%s is none/blank — skipping %s files.", label.lower(), label)
+        log.debug("[splitvar] vars_%s is empty - %s files skipped.",
+                  label.lower(), label)
         return []
 
     if requested == "all":
@@ -62,7 +63,8 @@ def _resolve_vars(
         if name in available:
             resolved.append(name)
         else:
-            log.warning("[splitvar] Variable not in dataset (%s), skipping: %s", label, name)
+            log.warning("[splitvar] %s not in the %s file - skipped.", name,
+                        label)
     return resolved
 
 
@@ -80,10 +82,11 @@ def _split_file(
     mode = _detect_mode(stem)
 
     if mode is None:
-        log.warning("[splitvar] Cannot detect mode from filename, skipping: %s", src_path.name)
+        log.warning("[splitvar] %s: not _av_xy/_av_3d - skipped.",
+                    src_path.name)
         return 0
 
-    log.debug("[splitvar] %s → mode=%s", src_path.name, mode)
+    log.debug("[splitvar] %s -> mode=%s", src_path.name, mode)
 
     is_3d    = (mode == "3D")
     chunks   = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d)
@@ -95,16 +98,18 @@ def _split_file(
     data_vars = _resolve_vars(ds, requested, log, label=mode)
 
     if not data_vars:
-        log.warning("[splitvar] No valid variables found in %s — skipping.", src_path.name)
+        log.warning("[splitvar] no valid variables in %s - skipped.",
+                    src_path.name)
         return 0
 
     group_vars     = [v for v in step_cfg.group_vars if v in data_vars] if is_3d else []
     individual_vars = [v for v in data_vars if v not in group_vars]
 
-    log.debug("[splitvar] group_vars=%s  individual=%s", group_vars, individual_vars)
+    log.debug("[splitvar] group %s, individual %s", group_vars,
+              individual_vars)
 
     if dry_run:
-        log.info("[splitvar] [DRY RUN] Would write %d file(s) from %s",
+        log.info("[splitvar] would write %d file(s) from %s (dry run)",
                  (1 if group_vars else 0) + len(individual_vars), src_path.name)
         return 0
 
@@ -114,30 +119,30 @@ def _split_file(
     # ---- Combined vector file (3D only) -----------------------------------
     if group_vars:
         out_path = out_dir / f"{stem}.{step_cfg.group_suffix}.nc"
-        if should_write(out_path, cfg.overwrite, log):
-            log.info("[splitvar] Writing group %s → %s ...", group_vars, out_path.name)
+        if should_write(out_path, cfg.overwrite, log, "splitvar"):
             t0 = time.monotonic()
             try:
                 write_dataset(ds[group_vars], out_path, cfg.complevel)
-                log.info("[splitvar]   ✓  %s  (%s)", fmt_size(out_path), fmt_elapsed(t0))
+                log.info("[splitvar] wrote %s: %s, %s in %s", out_path.name,
+                         ", ".join(group_vars), fmt_size(out_path),
+                         fmt_elapsed(t0))
             except Exception as exc:
-                log.error("[splitvar] FAILED writing %s: %s", out_path.name, exc)
+                log.error("[splitvar] %s failed: %s", out_path.name, exc)
                 failures += 1
 
     # ---- Individual scalar files ------------------------------------------
     for i, varname in enumerate(individual_vars, 1):
         safe_name = varname.replace("*", "")
         out_path  = out_dir / f"{stem}.{safe_name}.nc"
-        if not should_write(out_path, cfg.overwrite, log):
+        if not should_write(out_path, cfg.overwrite, log, "splitvar"):
             continue
-        log.info("[splitvar] [%d/%d] %s → %s ...",
-                 i, len(individual_vars), varname, out_path.name)
         t0 = time.monotonic()
         try:
             write_dataset(ds[[varname]], out_path, cfg.complevel)
-            log.info("[splitvar]   ✓  %s  (%s)", fmt_size(out_path), fmt_elapsed(t0))
+            log.info("[splitvar] wrote %s: %s in %s", out_path.name,
+                     fmt_size(out_path), fmt_elapsed(t0))
         except Exception as exc:
-            log.error("[splitvar] FAILED writing %s: %s", out_path.name, exc)
+            log.error("[splitvar] %s failed: %s", out_path.name, exc)
             failures += 1
 
     ds.close()
@@ -168,17 +173,15 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
 
     nc_files = sorted(input_dir.glob("*.nc"))
     if not nc_files:
-        log.warning("[splitvar] No .nc files found in %s", input_dir)
+        log.warning("[splitvar] no .nc files found in %s", input_dir)
         return
 
     log.info("[splitvar] %d file(s) to process", len(nc_files))
     total_failures = 0
 
     for src_path in nc_files:
-        log.info("[splitvar] Processing: %s", src_path.name)
         total_failures += _split_file(src_path, out_dir, cfg, dry_run, log)
 
     if total_failures:
-        raise RuntimeError(f"[splitvar] {total_failures} file(s) failed — check log above.")
+        raise RuntimeError(f"[splitvar] {total_failures} file(s) failed - see the log above.")
 
-    log.info("[splitvar] Done.")

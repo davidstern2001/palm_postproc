@@ -218,7 +218,7 @@ def _add_latlon(
     The projected dimension coordinates are left untouched.
     """
     if "x" not in ds_out.coords or "y" not in ds_out.coords:
-        log.warning("[coord] No x/y coordinates — cannot build lat/lon.")
+        log.warning("[coord] no x/y coordinates - cannot build lat/lon.")
         return ds_out
 
     x_vals = np.asarray(ds_out["x"].values, dtype=np.float64)
@@ -232,8 +232,8 @@ def _add_latlon(
 
     n_bad = int(np.sum(~np.isfinite(lon2d) | ~np.isfinite(lat2d)))
     if n_bad:
-        log.warning("[coord] %d point(s) could not be transformed to WGS84 "
-                    "(outside the projection's domain of validity).", n_bad)
+        log.warning("[coord] %d point(s) outside the projection's validity "
+                    "- no WGS84 coordinates there.", n_bad)
 
     ds_out["latitude"] = xr.Variable(
         ("y", "x"), lat2d.astype(np.float64),
@@ -356,10 +356,10 @@ def _add_coordinates(
     _dt_attr = ds.attrs.get("dt_averaging", ds.attrs.get("averaging_interval"))
     dt = float(_dt_attr) if _dt_attr is not None else None
     if dt is not None and dt <= 0:
-        log.warning("[coord] dt_averaging=%.1f is invalid in %s — timestamps "
-                    "will not be snapped.", dt, src_path.name)
+        log.warning("[coord] %s: dt_averaging=%.1f is invalid - timestamps "
+                    "not snapped.", src_path.name, dt)
         dt = None
-    log.debug("[coord] Averaging interval dt=%s",
+    log.debug("[coord] averaging interval dt=%s",
               f"{dt:.1f} s" if dt else "none (instantaneous output)")
 
     # time_datetime may come back either as datetime64 (if decode_cf parsed
@@ -378,13 +378,12 @@ def _add_coordinates(
             shift = (file_epoch - origin_dt64) / np.timedelta64(1, "s")
             if shift != 0.0:
                 log.debug("[coord] file epoch differs from origin_time by "
-                          "%.0f s — shifting time values.", shift)
+                          "%.0f s - shifting time values.", shift)
                 elapsed_seconds = elapsed_seconds + shift
         else:
-            log.warning(
-                "[coord] %s: could not parse a CF epoch from time units "
-                "'%s'; assuming the values are already seconds since "
-                "origin_time.", src_path.name, original_units)
+            log.warning("[coord] %s: no CF epoch in time units '%s' - taken "
+                        "as seconds since origin_time.", src_path.name,
+                        original_units)
 
     # Snap to the averaging interval only for averaged products. PALM writes
     # averaged output at exact multiples of dt_averaging, so rounding removes
@@ -410,11 +409,10 @@ def _add_coordinates(
                 pass
     if _epsg is None:
         _epsg = 32633
-        log.warning(
-            "[coord] No EPSG found in %s and none set in config — assuming "
-            "EPSG:%d (UTM 33N). If this domain is not in UTM 33N the output "
-            "coordinates will be labelled with the wrong CRS; set "
-            "steps.coord.utm_zone explicitly.", src_path.name, _epsg)
+        # A domain outside UTM 33N would get the wrong CRS label.
+        log.warning("[coord] %s: no EPSG in the file or config - assuming "
+                    "EPSG:%d (UTM 33N); set steps.coord.utm_zone.",
+                    src_path.name, _epsg)
 
     target_crs = pyproj.CRS.from_epsg(_epsg)
 
@@ -493,7 +491,7 @@ def _add_coordinates(
     # exempt entirely — see CELSIUS_EXEMPT_PREFIXES.
     target = "C" if coord_cfg.celsius else "K"
     if not coord_cfg.celsius:
-        log.debug("[coord] celsius disabled — temperatures emitted in kelvin")
+        log.debug("[coord] celsius disabled - temperatures emitted in kelvin")
 
     overrides = dict(getattr(coord_cfg, "temperature_units", None) or {})
 
@@ -510,7 +508,7 @@ def _add_coordinates(
         source = temperature_scale(src_units, var, overrides)
 
         if source == target:
-            log.debug("[coord] %s: already in %s (units=%r) — not converted",
+            log.debug("[coord] %s: already in %s (units=%r) - not converted",
                       var, target, src_units)
             ds_out[var].attrs["palm_postproc_source_units"] = str(src_units or "")
             ds_out[var].attrs["palm_postproc_output_units"] = str(src_units or "")
@@ -534,8 +532,8 @@ def _add_coordinates(
         ds_out[var].attrs["palm_postproc_output_units"] = out_units
         if fill_val is not None:
             ds_out[var].attrs["_FillValue"] = fill_val
-        log.info("[coord] %s: converted %s -> %s "
-                 "(fill/invalid points left untouched)", var, source, out_units)
+        # Fill / invalid points are left untouched.
+        log.info("[coord] %s: converted %s -> %s", var, source, out_units)
 
     # --- Write CRS metadata -----------------------------------------------
     log.debug("[coord] writing CRS metadata")
@@ -598,19 +596,20 @@ def _process_file(
 ) -> bool:
     """Process one file. Returns True on success."""
     if not _is_netcdf(src_path):
-        log.warning("[coord] Not a valid NetCDF file, skipping: %s", src_path.name)
+        log.warning("[coord] %s is not a valid NetCDF file - skipped.",
+                    src_path.name)
         return True
 
     is_3d  = "_av_3d" in src_path.stem
     chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d)
 
     out_path = out_dir / _output_name(src_path)
-    if not should_write(out_path, cfg.overwrite, log):
+    if not should_write(out_path, cfg.overwrite, log, "coord"):
         return True
 
     if dry_run:
-        log.info("[coord] [DRY RUN] Would add %s coordinates to %s → %s",
-                 cfg.steps.coord.crs, src_path.name, out_path.name)
+        log.info("[coord] would write %s: %s coordinates (dry run)",
+                 out_path.name, cfg.steps.coord.crs)
         return True
 
     ds = xr.open_dataset(src_path, decode_times=False, decode_cf=False, chunks=chunks)
@@ -618,12 +617,12 @@ def _process_file(
     # Skip time-invariant files (e.g. ind_z_xy, zusi, zwwi) — they carry
     # no time dimension and do not need coordinate transformation.
     if "time" not in ds.dims and "time" not in ds.coords:
-        log.debug("[coord] No time dimension in %s — skipping (time-invariant variable).",
-                  src_path.name)
+        log.debug("[coord] %s is time-invariant - skipped", src_path.name)
         ds.close()
         return True
 
-    log.info("[coord] Adding coordinates: %s → %s ...", src_path.name, out_path.name)
+    log.debug("[coord] adding coordinates: %s -> %s", src_path.name,
+              out_path.name)
     t0 = time.monotonic()
 
     try:
@@ -634,11 +633,12 @@ def _process_file(
         }
         encoding["time"] = {"dtype": "float64"}
         ds_out.to_netcdf(out_path, format="NETCDF4", encoding=encoding)
-        log.info("[coord]   ✓  %s  (%s)", fmt_size(out_path), fmt_elapsed(t0))
+        log.info("[coord] wrote %s: %s in %s", out_path.name,
+                 fmt_size(out_path), fmt_elapsed(t0))
         return True
     except Exception as exc:
-        log.error("[coord] FAILED writing %s: %s", out_path.name, exc)
-        log.debug("[coord]", exc_info=True)
+        log.error("[coord] %s failed: %s", out_path.name, exc)
+        log.debug("[coord] traceback:", exc_info=True)
         return False
     finally:
         ds.close()
@@ -660,7 +660,7 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
 
     nc_files = sorted(input_dir.glob("*.nc"))
     if not nc_files:
-        log.warning("[coord] No .nc files found in %s", input_dir)
+        log.warning("[coord] no .nc files found in %s", input_dir)
         return
 
     log.info("[coord] %d file(s) to process", len(nc_files))
@@ -670,11 +670,9 @@ def run(cfg: Config, dry_run: bool, log: logging.Logger) -> None:
 
     failures = 0
     for src_path in nc_files:
-        log.info("[coord] Processing: %s", src_path.name)
         if not _process_file(src_path, out_dir, cfg, dry_run, log):
             failures += 1
 
     if failures:
-        raise RuntimeError(f"[coord] {failures} file(s) failed — check log above.")
+        raise RuntimeError(f"[coord] {failures} file(s) failed - see the log above.")
 
-    log.info("[coord] Done.")

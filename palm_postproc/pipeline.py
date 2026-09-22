@@ -82,7 +82,7 @@ def _apply_splitvar(
         # File type other than _av_xy / _av_3d (e.g. _pr, _surf, _topo_surf,
         # _ts) — no per-variable whitelist applies; pass the whole file
         # through unmodified to the next step.
-        log.debug("[pipeline] %s is not _av_xy/_av_3d — no variable splitting applied.",
+        log.debug("[pipeline] %s is not _av_xy/_av_3d - not split by variable",
                   src_path.name)
         return [("", ds)]
 
@@ -216,7 +216,8 @@ def _process_file_chained(
     ds_peek.close()
 
     if not splits_peek:
-        log.warning("[pipeline] No variables to process in %s", src_path.name)
+        log.warning("[pipeline] no variables to process in %s - skipped.",
+                    src_path.name)
         return 0
 
     # Build (suffix, has_time, out_path) for each output
@@ -231,7 +232,7 @@ def _process_file_chained(
     outputs_needed = []
     for var_suffix, ht, out_path in all_outputs:
         if state.is_current(src_path, out_path, cfg_h):
-            log.info("[pipeline] Up to date, skipping: %s", out_path.name)
+            log.info("[pipeline] kept (up to date): %s", out_path.name)
         else:
             outputs_needed.append((var_suffix, ht, out_path))
 
@@ -240,7 +241,7 @@ def _process_file_chained(
 
     if dry_run:
         for _, _, out_path in outputs_needed:
-            log.info("[pipeline] [DRY RUN] Would write: %s", out_path.name)
+            log.info("[pipeline] would write %s (dry run)", out_path.name)
         return 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -267,7 +268,7 @@ def _process_file_chained(
 
         ht, out_path = output_map[var_suffix]
 
-        log.info("[pipeline] Processing %s → %s ...", src_path.name, out_path.name)
+        log.debug("[pipeline] processing %s -> %s", src_path.name, out_path.name)
         t0 = time.monotonic()
 
         try:
@@ -281,7 +282,7 @@ def _process_file_chained(
 
             if _step_enabled("coord", cfg, only):
                 if not _has_time(ds_work):
-                    log.debug("[pipeline] Skipping coord for time-invariant: %s",
+                    log.debug("[pipeline] %s is time-invariant - no coord",
                               out_path.name)
                 else:
                     ds_work = _apply_coord(ds_work, src_path, cfg)
@@ -312,14 +313,15 @@ def _process_file_chained(
                 encoding["time"] = {"dtype": "float64"}
             ds_work.to_netcdf(out_path, format="NETCDF4", encoding=encoding)
 
-            log.info("[pipeline]   ✓  %s  (%s)", fmt_size(out_path), fmt_elapsed(t0))
+            log.info("[pipeline] wrote %s: %s in %s", out_path.name,
+                     fmt_size(out_path), fmt_elapsed(t0))
             state.mark_done(src_path, out_path, cfg_h)
             if not defer_save:
                 state.save()
 
         except Exception as exc:
-            log.error("[pipeline] FAILED %s: %s", out_path.name, exc)
-            log.debug("[pipeline]", exc_info=True)
+            log.error("[pipeline] %s failed: %s", out_path.name, exc)
+            log.debug("[pipeline] traceback:", exc_info=True)
             state.invalidate(out_path)
             if not defer_save:
                 state.save()
@@ -346,9 +348,9 @@ def _run_classic(cfg: Config, dry_run: bool, only: Optional[set]) -> None:
 
     for name, step_cfg, run_fn in step_fns:
         if not _step_enabled(name, cfg, only):
-            log.info("step %s: %s", name,
+            log.info("Step %s: %s, skipping.", name,
                      "disabled" if not step_cfg.enabled
-                     else "skipped (--only)")
+                     else "not in --only")
             continue
         run_fn(cfg, dry_run=dry_run, log=log)
 
@@ -422,15 +424,15 @@ def run(
         _prev   = _jstate.get_meta("join_config_hash")
         _force  = _prev is not None and _prev != _jhash
         if _force:
-            log.warning("[pipeline] join settings changed since the last run "
-                        "(%s → %s) — rejoining, existing files will be "
-                        "replaced.", _prev, _jhash)
+            log.warning("[pipeline] join settings changed since the last "
+                        "run - rejoining, existing files will be replaced.")
+            log.debug("[pipeline] join config hash %s -> %s", _prev, _jhash)
         join_run(cfg, dry_run=dry_run, log=log, force=_force)
         if not dry_run:
             _jstate.set_meta("join_config_hash", _jhash)
             _jstate.save()
     else:
-        log.info("step join: disabled")
+        log.info("Step join: disabled, skipping.")
 
     # ---- Chained post-join steps ------------------------------------------
     post_join_enabled = any(
@@ -438,16 +440,16 @@ def run(
         for n in ("splitvar", "splitz", "splittime", "coord")
     )
     if not post_join_enabled:
-        log.info("[pipeline] No post-join steps enabled — done.")
+        log.info("[pipeline] no post-join steps enabled.")
         return
 
     step(log, "Processing each file through all steps in memory")
     if cfg.workers > 1:
-        log.info("Parallel workers: %d", cfg.workers)
+        log.info("[pipeline] %d parallel workers", cfg.workers)
 
     state    = State.load(cfg)
     cfg_h    = config_hash(cfg)
-    log.debug("[pipeline] Config hash: %s", cfg_h)
+    log.debug("[pipeline] config hash: %s", cfg_h)
 
     input_dir = _chained_input_dir(cfg)
     all_files = sorted(input_dir.glob("*.nc"))
@@ -460,17 +462,16 @@ def run(
     skipped   = [f for f in all_files if _detect_mode(f.stem) is None]
 
     if skipped:
-        log.info("[pipeline] %d file(s) not _av_xy/_av_3d — left as-is in %s:",
-                 len(skipped), input_dir.name)
-        for f in skipped:
-            log.debug("[pipeline]   %s", f.name)
+        log.info("[pipeline] %d file(s) not _av_xy/_av_3d - left as they are "
+                 "in %s", len(skipped), input_dir.name)
+        log.debug("[pipeline] left as they are: %s",
+                  ", ".join(f.name for f in skipped))
 
     if not src_files:
-        log.warning("[pipeline] No _av_xy/_av_3d files found in %s", input_dir)
+        log.warning("[pipeline] no _av_xy/_av_3d files found in %s", input_dir)
         return
 
-    log.info("[pipeline] %d source file(s) to process from %s",
-             len(src_files), input_dir)
+    log.info("[pipeline] %d source file(s) from %s", len(src_files), input_dir)
     t_total        = time.monotonic()
     total_failures = 0
 
@@ -490,7 +491,7 @@ def run(
                     state.merge(records)
                     state.save()
                 except Exception as exc:
-                    log.error("[pipeline] Worker crashed for %s: %s", src.name, exc)
+                    log.error("[pipeline] worker crashed for %s: %s", src.name, exc)
                     total_failures += 1
     else:
         for src_path in src_files:
@@ -502,6 +503,6 @@ def run(
     if total_failures:
         raise RuntimeError(
             f"[pipeline] {total_failures} file(s) failed in {elapsed:.1f}s"
-            " — check log above."
+            " - see the log above."
         )
-    log.info("[pipeline] All files done in %.1fs.", elapsed)
+    log.info("[pipeline] all files done in %.1fs", elapsed)

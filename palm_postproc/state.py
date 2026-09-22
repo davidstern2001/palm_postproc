@@ -12,7 +12,7 @@ Usage
 -----
     state = State.load(cfg)
     if state.is_current(src_path, out_path, cfg_hash):
-        log.info("Up to date, skipping: %s", out_path.name)
+        log.info("[pipeline] kept (up to date): %s", out_path.name)
         return True
     # ... process ...
     state.mark_done(src_path, out_path, cfg_hash)
@@ -150,10 +150,10 @@ class State:
                     raw = json.load(fh)
                 meta = raw.pop(cls._META_KEY, {}) or {}
                 records = {k: _Record.from_dict(v) for k, v in raw.items()}
-                log.debug("[state] Loaded %d record(s) from %s",
+                log.debug("[state] loaded %d record(s) from %s",
                           len(records), state_path.name)
             except Exception as exc:
-                log.warning("[state] Could not read state file (%s) — starting fresh.", exc)
+                log.warning("[state] could not read state file (%s) - starting fresh.", exc)
 
         return cls(state_path, records, meta)
 
@@ -180,7 +180,7 @@ class State:
             return False
 
         if rec.cfg_hash != cfg_hash:
-            log.debug("[state] Config changed for %s — will reprocess.", out_path.name)
+            log.debug("[state] config changed for %s - will reprocess.", out_path.name)
             return False
 
         if not src_path.exists():
@@ -188,7 +188,7 @@ class State:
 
         mtime, size = _file_fingerprint(src_path)
         if rec.src_mtime != mtime or rec.src_size != size:
-            log.debug("[state] Source changed for %s — will reprocess.", out_path.name)
+            log.debug("[state] source changed for %s - will reprocess.", out_path.name)
             return False
 
         return True
@@ -271,8 +271,8 @@ class State:
                     payload[self._META_KEY] = self._meta
                 json.dump(payload, fh, indent=2)
             tmp.replace(self._path)
-            log.debug("[state] Saved %d record(s) to %s",
+            log.debug("[state] saved %d record(s) to %s",
                       len(self._records), self._path.name)
             self._dirty = False
         except Exception as exc:
-            log.warning("[state] Could not save state file: %s", exc)
+            log.warning("[state] could not save state file: %s", exc)

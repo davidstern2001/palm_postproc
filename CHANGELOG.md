@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.1
+
+**Logging - same style as palm2gis and palm_preproc**
+
+- One `[step] wrote NAME: ...` line per output instead of a
+  `Processing a -> b ...` line followed by a `✓ size (time)` line; the
+  start-of-file lines are debug only.
+- Existing outputs are reported as `[step] kept (exists): NAME` at info
+  (was a warning), dry runs as `[step] would write NAME (dry run)`.
+- ASCII only (`-`, `->`), lowercase messages after the `[tag]`, no
+  `[step] Done.` lines.
+- The configuration summary is three lines (case/domain, input, steps);
+  the remaining settings are debug. `overwrite: true` now warns, as in
+  palm2gis.
+- Long warnings shortened (celsius default, unknown keys, UTM 33N
+  fallback, the join part-mismatch error); the explanations moved to
+  code comments.
+- join's per-dimension / per-variable debug lines collapsed into one.
+
 ## 0.5.0
 
 **join can no longer silently corrupt a file**

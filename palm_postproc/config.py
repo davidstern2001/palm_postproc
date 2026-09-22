@@ -319,7 +319,7 @@ def _validate(cfg: dict, source: Path) -> None:
 
     if errors:
         msg = (f"Configuration errors in '{source}':\n"
-               + "\n".join(f"  • {e}" for e in errors))
+               + "\n".join(f"  - {e}" for e in errors))
         raise ValueError(msg)
 
 
@@ -355,17 +355,15 @@ def _check_unknown_keys(raw: dict, defaults: dict, log,
             unknown += _check_unknown_keys(value, defaults[key], log,
                                            prefix=f"{full}.")
     if not prefix and unknown:
-        log.warning(
-            "Unknown configuration key(s) ignored: %s. Check for typos or "
-            "wrong indentation — these settings have no effect.",
-            ", ".join(sorted(unknown)))
+        log.warning("[config] unknown key(s) ignored: %s - check spelling "
+                    "and indentation.", ", ".join(sorted(unknown)))
     return unknown
 
 
 def load(path: Union[str, Path]) -> Config:
     """Load and validate a YAML config file. Returns Config."""
     source = Path(path).expanduser().resolve()
-    log.debug("Loading configuration from: %s", source)
+    log.debug("[config] loading %s", source)
 
     if not source.is_file():
         raise FileNotFoundError(f"Configuration file not found: '{source}'")
@@ -373,7 +371,7 @@ def load(path: Union[str, Path]) -> Config:
     with source.open() as fh:
         raw = yaml.safe_load(fh) or {}
 
-    log.debug("Raw config keys: %s", list(raw.keys()))
+    log.debug("[config] top-level keys: %s", ", ".join(raw))
 
     _check_unknown_keys(raw, _DEFAULTS, log)
 
@@ -384,7 +382,8 @@ def load(path: Union[str, Path]) -> Config:
     domain = cfg.get("domain")
     domain_suffix = _parse_domain_suffix(domain)
 
-    log.debug("Case: %s  |  Domain suffix: '%s'", case, domain_suffix or "(root)")
+    log.debug("[config] case %s, domain suffix %s", case,
+              domain_suffix or "(root)")
 
     paths = _build_paths(cfg.get("paths", {}), case, domain_suffix)
     s     = cfg["steps"]
@@ -432,11 +431,9 @@ def load(path: Union[str, Path]) -> Config:
     # written before that says nothing about it and would silently start
     # producing kelvin, so say so once, loudly, until it is set explicitly.
     if coord.enabled and "celsius" not in raw.get("steps", {}).get("coord", {}):
-        log.warning(
-            "steps.coord.celsius is not set — using the 0.4.0 default "
-            "(false: temperatures stay in KELVIN). This default was `true` "
-            "up to 0.3.0; set it explicitly to silence this and to make the "
-            "config say what it means.")
+        log.warning("[config] steps.coord.celsius not set - temperatures "
+                    "stay in KELVIN (default since 0.4.0); set it to silence "
+                    "this.")
 
     config = Config(
         case      = case,
@@ -451,17 +448,12 @@ def load(path: Union[str, Path]) -> Config:
         _source   = source,
     )
 
-    log.debug("Chain mode : %s", config.chain)
-    log.debug("Workers    : %d", config.workers)
-    log.debug("Resolved paths:")
-    log.debug("  join_input       : %s", paths.join_input)
-    log.debug("  output_join      : %s", paths.output_join)
-    log.debug("  output_splitvar  : %s", paths.output_splitvar)
-    log.debug("  output_splitz    : %s", paths.output_splitz)
-    log.debug("  output_splittime : %s", paths.output_splittime)
-    log.debug("  output_coord     : %s", paths.output_coord)
+    for name in ("join_input", "output_join", "output_splitvar",
+                 "output_splitz", "output_splittime", "output_coord"):
+        log.debug("[config] %s: %s", name, getattr(paths, name))
 
     if join.enabled and not paths.join_input.exists():
-        log.warning("Join input directory does not exist yet: %s", paths.join_input)
+        log.warning("[config] join input directory does not exist yet: %s",
+                    paths.join_input)
 
     return config
