@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0
+
+**Config layout, shared with palm2gis and palm_preproc**
+
+- A config now says what it wants out, not which internal steps run:
+  `project`, `input`, `variables`, `region`, `time`, `joined`, `analysis`
+  and `advanced`. `case`, `paths`, `steps`, `chain`, `complevel`,
+  `workers` and `verbosity` are gone from the new layout; the five steps
+  are switched on by the blocks that need them (no `region.z_max` means
+  no vertical cut, `analysis.dir: null` leaves only the joined files).
+- `time.from` / `time.to` accept palm2gis's vocabulary - an absolute time,
+  a clock time, an offset ('6h') or seconds since origin_time - and are
+  resolved against each file's own axis, so one window means the same
+  period in a 10-minute 3D file and an hourly surface file. The pre-0.6
+  record indices (`t_start` / `t_end`) still work.
+- `steps.coord.celsius` is replaced by `advanced.units.temperature`
+  (`K` or `C`), and **the default changes to `C`**, matching palm2gis
+  0.25.0. `advanced.units.potential_temperature` accepts only `K`.
+  `temperature_units` becomes `advanced.units.overrides`.
+- `steps.coord.utm_zone` (an EPSG code) becomes `input.crs`
+  ('EPSG:32633'), `chain: false` becomes
+  `advanced.performance.keep_intermediate: true`, and the join settings
+  move under `advanced.join`.
+- An unknown or misspelt key in the new layout stops the run with a
+  suggestion instead of being warned about and ignored. Log messages use
+  the new names.
+- Configs in the pre-0.6 layout still load unchanged, except that they
+  too get the new Celsius default.
+
 ## 0.5.1
 
 **Logging - same style as palm2gis and palm_preproc**

@@ -553,6 +553,95 @@ def verify_dry_run(root, failures):
 # ------------------------------
 # 7. MAIN
 # ------------------------------
+def verify_new_layout(root, failures):
+    """The template.yaml layout: project/input/variables/region/time and
+    the two output blocks, translated onto the internal settings."""
+    print("\n-- the 0.6 config layout --------------------------------")
+    import xarray as xr
+    from palm_postproc.config import load as load_config
+    from palm_postproc.layout import to_new_names
+    from palm_postproc.pipeline import run as run_pipeline
+
+    base = root / "newlayout"
+    base.mkdir(parents=True)
+    out = build_dataset(base)
+    cfg_path = base / "new.yaml"
+    cfg_path.write_text(f"""
+project:
+    name: selftest
+    root: {base / 'selftest'}
+input:
+    palm_output: OUTPUT
+    domain: N02
+variables:
+    av_3d: [theta, ta]
+    av_xy: none
+region:
+    z_max: 30
+time:
+    from: 0
+    to: '1h'
+joined:
+    dir: OUTPUT_join
+analysis:
+    dir: OUTPUT_post
+""")
+    cfg = load_config(cfg_path)
+    check(cfg.layout == "new" and cfg.case == "selftest"
+          and cfg.domain == "N02",
+          "layout: the new blocks are recognised", failures)
+    check(cfg.steps.splitz.z_max == 30.0 and cfg.steps.splitz.enabled
+          and cfg.steps.splittime.enabled
+          and cfg.steps.splittime.time_to == "1h",
+          "layout: region.z_max and the time window reach the steps",
+          failures)
+    check(cfg.steps.coord.celsius is True,
+          "layout: temperatures are Celsius by default", failures)
+    run_pipeline(cfg, dry_run=False, only=None)
+
+    joined = base / "selftest" / "OUTPUT_join"
+    post = base / "selftest" / "OUTPUT_post"
+    check(any(joined.glob("*_av_3d_N02.nc")),
+          "layout: joined.dir holds the joined files", failures)
+    names = {p.name for p in post.glob("*.nc")}
+    check(names and all("av_3d" in n for n in names),
+          f"layout: analysis.dir holds the split files, av_xy skipped "
+          f"({sorted(names)})", failures)
+    with xr.open_dataset(next(post.glob("*.ta.*.nc"))) as ds:
+        check(ds["ta"].attrs.get("units") == "degrees_C",
+              "layout: ta is written in degrees C", failures)
+        check(ds.sizes["zu_3d"] < 10,
+              "layout: region.z_max cut the vertical", failures)
+
+    kelvin = base / "kelvin.yaml"
+    kelvin.write_text(cfg_path.read_text().replace("OUTPUT_post", "OUT_K")
+                      + "advanced:\n    units:\n        temperature: K\n")
+    check(load_config(kelvin).steps.coord.celsius is False,
+          "layout: advanced.units.temperature: K selects kelvin", failures)
+
+    def rejects(text, expect, msg):
+        bad = base / "bad.yaml"
+        bad.write_text(text)
+        try:
+            load_config(bad)
+            check(False, msg, failures)
+        except ValueError as exc:
+            check(expect in str(exc), f"{msg} ({exc})", failures)
+
+    rejects(cfg_path.read_text().replace("    z_max:", "    z_mx:"),
+            "Did you mean 'z_max'",
+            "layout: a misspelt key is rejected with a suggestion")
+    rejects(cfg_path.read_text() + "steps:\n    join:\n        enabled: true\n",
+            "old config layout",
+            "layout: a legacy block in the new layout is explained")
+    rejects(cfg_path.read_text()
+            + "advanced:\n    units:\n        potential_temperature: C\n",
+            "must be K",
+            "layout: a Celsius potential temperature is rejected")
+    check(to_new_names("set steps.coord.utm_zone") == "set input.crs",
+          "layout: messages use the new setting names", failures)
+
+
 def run(keep=False):
     if not check_dependencies():
         return 1
@@ -589,6 +678,7 @@ def run(keep=False):
         verify_classic(tmp, failures)
         verify_only(tmp, failures)
         verify_dry_run(tmp, failures)
+        verify_new_layout(tmp, failures)
 
     except Exception:
         print("\nUNEXPECTED ERROR:\n")

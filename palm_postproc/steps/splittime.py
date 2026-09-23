@@ -17,6 +17,7 @@ import xarray as xr
 
 from ..config import Config, SplittimeConfig
 from ..log import step
+from ..timespec import TimeSpecError, parse_origin, to_seconds
 from ..utils import (
     open_dataset, write_dataset, try_dask_chunks,
     fmt_size, fmt_elapsed, fmt_duration, should_write,
@@ -41,6 +42,39 @@ def _parse_duration(s: str) -> float:
     if s[-1] in suffixes:
         return float(s[:-1]) * suffixes[s[-1]]
     raise ValueError(f"Invalid duration '{s}'. Use plain seconds or a suffix: s/m/h/d.")
+
+
+def _window_indices(ds, step_cfg, src_path, log):
+    """The [first, last] record of the configured window.
+
+    time.from / time.to are resolved against this file's own axis, so one
+    window covers the same period in files of different output interval.
+    The pre-0.6 record indices (t_start / t_end) are used when no window
+    is given.
+    """
+    n_time = ds.sizes["time"]
+    if step_cfg.time_from is None and step_cfg.time_to is None:
+        t_start = step_cfg.t_start if step_cfg.t_start is not None else 0
+        t_end = step_cfg.t_end if step_cfg.t_end is not None else n_time - 1
+        return t_start, t_end
+
+    origin = parse_origin(ds.attrs.get("origin_time"))
+    t_values = ds["time"].values.astype(float)
+    t_from = to_seconds(step_cfg.time_from, origin)
+    t_to = to_seconds(step_cfg.time_to, origin)
+    keep = np.ones(n_time, dtype=bool)
+    if t_from is not None:
+        keep &= t_values >= t_from - 1e-6
+    if t_to is not None:
+        keep &= t_values <= t_to + 1e-6
+    if not keep.any():
+        raise ValueError(
+            f"no record of {src_path.name} falls in the time window "
+            f"({t_values[0]:.0f} .. {t_values[-1]:.0f} s in the file)")
+    idx = np.nonzero(keep)[0]
+    log.debug("[splittime] %s: window -> records %d..%d of %d",
+              src_path.name, int(idx[0]), int(idx[-1]), n_time)
+    return int(idx[0]), int(idx[-1])
 
 
 def _select_timesteps(
@@ -120,8 +154,12 @@ def _process_file(
     n_time   = ds.sizes["time"]
     t_values = ds["time"].values.astype(float)
 
-    t_start = step_cfg.t_start if step_cfg.t_start is not None else 0
-    t_end   = step_cfg.t_end   if step_cfg.t_end   is not None else n_time - 1
+    try:
+        t_start, t_end = _window_indices(ds, step_cfg, src_path, log)
+    except (TimeSpecError, ValueError) as exc:
+        log.error("[splittime] %s", exc)
+        ds.close()
+        return False
 
     # Validate
     if not (0 <= t_start < n_time):

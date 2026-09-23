@@ -13,7 +13,7 @@ Post-processing pipeline for PALM large-eddy simulation NetCDF output.
 | Step | Script | What it does |
 |------|--------|--------------|
 | `splitvar` | `steps/splitvar.py` | Splits into one NetCDF per variable |
-| `splitz` | `steps/splitz.py` | Restricts 3D files to z ≤ z_max |
+| `splitz` | `steps/splitz.py` | Restricts 3D files to z ≤ `region.z_max` |
 | `splittime` | `steps/splittime.py` | Subsamples or slices the time dimension |
 | `coord` | `steps/coord.py` | Appends UTM / WGS84 georeferenced coordinates |
 
@@ -85,26 +85,36 @@ See `template.yaml` for the full annotated configuration reference.
 Key options:
 
 ```yaml
-case: holesovice_stern_now   # required
-paths:
-  base: holesovice_stern_now
+project:
+    name: holesovice_stern_now
+    root: ~/palm/model.git/build/JOBS/{name}
 
-steps:
-  splitvar:
-    enabled: true
-    vars_2d: all             # or a list of variable names
-    vars_3d: all
-  splitz:
-    enabled: true
-    z_max: 300.0
-  splittime:
-    enabled: true
-    timestep: "1h"
-  coord:
-    enabled: true
-    crs: utm                 # utm | wgs84 | both
-    celsius: true            # K -> degrees C for theta*/tsurf* (default true)
+input:
+    palm_output: OUTPUT
+    domain: N02              # null for the root domain
+
+variables:
+    av_xy: all               # or a list of variable names
+    av_3d: all
+
+region:
+    z_max: 300.0             # metres above the domain base
+
+time:
+    step: "1h"               # from: / to: take the window
+
+joined:
+    dir: OUTPUT_join         # the input for palm2gis
+
+analysis:
+    dir: OUTPUT_post
+    coordinates: utm         # utm | wgs84 | both
 ```
+
+A block decides what is produced: no `region.z_max` means no vertical cut,
+no `time:` section means every record, `analysis.dir: null` leaves only the
+joined files. Configs in the pre-0.6 layout (`case`, `paths`, `steps`) still
+load unchanged.
 
 ---
 
@@ -175,11 +185,11 @@ must be kept in step **by hand**. There is no shared config.
 
 | Convention | `palm_postproc` | `palm2gis` | Note |
 |---|---|---|---|
-| CRS | `steps.coord.utm_zone`, default EPSG:32633 | `crs.palm`, default `EPSG:32633` | Change **both** for a non-UTM-33N domain (e.g. S-JTSK EPSG:5514), or the branches disagree |
-| Celsius | `steps.coord.celsius`, default **false** | `celsius`, default **false** | Aligned in 0.4.0 (it used to be true here). Both default to kelvin |
+| CRS | `input.crs`, default EPSG:32633 | `input.crs`, default `EPSG:32633` | Change **both** for a non-UTM-33N domain (e.g. S-JTSK EPSG:5514), or the branches disagree |
+| Celsius | `advanced.units.temperature`, default **C** | `advanced.units.temperature`, default **C** | Aligned in 0.6.0 / 0.25.0: an air or surface temperature is wanted in degrees C. Set `K` in both if you want raw kelvin |
 | Temperature variables identified | `theta*`, `tsurf*`, `t_surf*`, `ta*` | same | Defined in `steps/coord.py::TEMP_PREFIXES` and `palm2gis/steps/thermo.py::TEMP_PREFIXES` — **edit both together** |
-| Temperature **scale** | read from each variable's `units` | same | **PALM writes `ta` and `ta_2m*` in °C; `theta`, `tsurf*`, `t_surf*` are kelvin.** Assuming kelvin by name is what produced voxels at −253 °C. PALM's truncated `"degree_"` counts as Celsius. An unrecognised unit **raises** rather than being guessed — override with `steps.coord.temperature_units` / `temperature_units` |
-| Potential temperature | never converted | never converted | `theta` is exempt from `celsius`: it is a kelvin-defined quantity |
+| Temperature **scale** | read from each variable's `units` | same | **PALM writes `ta` and `ta_2m*` in °C; `theta`, `tsurf*`, `t_surf*` are kelvin.** Assuming kelvin by name is what produced voxels at −253 °C. PALM's truncated `"degree_"` counts as Celsius. An unrecognised unit **raises** rather than being guessed — override with `advanced.units.overrides` in either tool |
+| Potential temperature | never converted | never converted | `theta` is kelvin-defined; `advanced.units.potential_temperature` accepts only `K` |
 | Vertical datum | `coord` adds `origin_z` to z | `Grid.abs_z` adds `origin_z` to every output z | Both emit height above sea level. A static driver with `origin_z = 0` warns |
 | Input expected | raw / joined PALM output | raw / joined PALM output **+ static driver** | Never each other's output |
 | Time origin | `origin_time` attribute, CF epoch honoured incl. UTC offset | `origin_time` attribute, or `domain.origin_time` override | |

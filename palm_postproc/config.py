@@ -18,6 +18,8 @@ from typing import List, Optional, Union
 
 import yaml
 
+from .layout import LayoutError, is_new_layout, translate
+
 log = logging.getLogger("palm_postproc")
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,12 @@ _DEFAULTS: dict = {
         },
         "splittime": {
             "enabled":  True,
+            # Window in time (the `time:` section): both ends inclusive,
+            # resolved against each file's own axis. See timespec.py.
+            "time_from": None,
+            "time_to":   None,
+            # Window by record index (pre-0.6, and the escape hatch when a
+            # file carries no usable times).
             "t_start":  None,
             "t_end":    None,
             "timestep": None,
@@ -67,16 +75,13 @@ _DEFAULTS: dict = {
             "enabled":  True,
             "crs":      "utm",
             "utm_zone": None,
-            # Convert temperature variables (theta*, tsurf*, t_surf*, ta*)
-            # from kelvin to degrees C.
-            #
-            # CHANGED IN 0.4.0: the default is now FALSE, matching palm2gis.
-            # It used to be true here and false there, so the same run's two
-            # output branches disagreed and neither default told you what the
-            # other had done. False is the safer of the two: it preserves raw
-            # PALM fidelity and standard CF units. Set `celsius: true`
-            # explicitly to keep the old behaviour.
-            "celsius":  False,
+            # Set by advanced.units.temperature (C | K), and C by
+            # default since 0.6.0: an air or surface temperature is wanted
+            # in degrees C. Covers tsurf*, t_surf* and ta*. A POTENTIAL
+            # temperature (theta*) is kelvin-defined and is exempt whatever
+            # this says. The same rule and the same variable list as
+            # palm2gis, so a directory cannot end up mixing units.
+            "celsius":  True,
             # Explicit temperature scale for variables whose `units`
             # attribute cannot be read. Maps a variable name to "K" or
             # "C", e.g. {ta_2m*_xy: C}. Needed rarely: PALM's own unit
@@ -138,10 +143,12 @@ class SplitzConfig:
 
 @dataclass
 class SplittimeConfig:
-    enabled:  bool
-    t_start:  Optional[int]
-    t_end:    Optional[int]
-    timestep: Optional[str]
+    enabled:   bool
+    time_from: Optional[object]
+    time_to:   Optional[object]
+    t_start:   Optional[int]
+    t_end:     Optional[int]
+    timestep:  Optional[str]
 
 
 @dataclass
@@ -173,6 +180,7 @@ class Config:
     workers:   int
     paths:     PathsConfig
     steps:     StepsConfig
+    layout:    str = "legacy"       # "new" (template.yaml) or "legacy"
     _source:   Path = field(repr=False, default=None)
 
 
@@ -373,7 +381,21 @@ def load(path: Union[str, Path]) -> Config:
 
     log.debug("[config] top-level keys: %s", ", ".join(raw))
 
-    _check_unknown_keys(raw, _DEFAULTS, log)
+    layout = "legacy"
+    if is_new_layout(raw):
+        layout = "new"
+        try:
+            raw, notes = translate(raw)
+        except LayoutError as exc:
+            raise ValueError(f"Configuration error in '{source}':\n"
+                             f"  - {exc}") from None
+        from .layout import to_new_names
+        from .log import set_message_names
+        set_message_names(to_new_names)
+        for note in notes:
+            log.info("[config] %s", note)
+    else:
+        _check_unknown_keys(raw, _DEFAULTS, log)
 
     cfg = _deep_merge(_DEFAULTS, raw)
     _validate(cfg, source)
@@ -415,10 +437,12 @@ def load(path: Union[str, Path]) -> Config:
         z_coord = str(s["splitz"]["z_coord"]),
     )
     splittime = SplittimeConfig(
-        enabled  = bool(s["splittime"]["enabled"]),
-        t_start  = s["splittime"]["t_start"],
-        t_end    = s["splittime"]["t_end"],
-        timestep = s["splittime"]["timestep"],
+        enabled   = bool(s["splittime"]["enabled"]),
+        time_from = s["splittime"]["time_from"],
+        time_to   = s["splittime"]["time_to"],
+        t_start   = s["splittime"]["t_start"],
+        t_end     = s["splittime"]["t_end"],
+        timestep  = s["splittime"]["timestep"],
     )
     coord = CoordConfig(
         enabled  = bool(s["coord"]["enabled"]),
@@ -430,12 +454,14 @@ def load(path: Union[str, Path]) -> Config:
     # The celsius default flipped from true to false in 0.4.0. A config
     # written before that says nothing about it and would silently start
     # producing kelvin, so say so once, loudly, until it is set explicitly.
-    if coord.enabled and "celsius" not in raw.get("steps", {}).get("coord", {}):
+    if (layout == "legacy" and coord.enabled
+            and "celsius" not in raw.get("steps", {}).get("coord", {})):
         log.warning("[config] steps.coord.celsius not set - temperatures "
-                    "stay in KELVIN (default since 0.4.0); set it to silence "
-                    "this.")
+                    "are in degrees C (default since 0.6.0); set it to "
+                    "silence this.")
 
     config = Config(
+        layout    = layout,
         case      = case,
         domain    = domain,
         complevel = int(cfg["complevel"]),
