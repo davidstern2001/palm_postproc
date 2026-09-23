@@ -346,6 +346,71 @@ def join_interleave_check(root, failures):
 
 
 # ------------------------------
+# 5c. JOIN REGRESSION: UNREADABLE PART
+# ------------------------------
+def join_unreadable_check(root, failures):
+    """
+    A restart cycle killed before PALM closed its files leaves a part that
+    netCDF4 cannot open ("NetCDF: HDF error"). That used to raise out of
+    the join and abort the whole pipeline. The bad part must now be
+    skipped, the readable parts joined, and the gap recorded.
+    """
+    print("\n-- join: unreadable part ---------------------------------")
+    import logging
+    import numpy as np
+    from netCDF4 import Dataset
+    from palm_postproc.steps.join import _join_file
+
+    src = root / "unreadable" / "OUTPUT"
+    dst = root / "unreadable" / "OUTPUT_join"
+    src.mkdir(parents=True, exist_ok=True)
+
+    for stem in (f"{CASE}_av_3d", f"{CASE}_av_3d_N02", f"{CASE}_av_xy"):
+        for i, t0 in enumerate((1800.0, 5400.0, 9000.0)):
+            ds = Dataset(src / f"{stem}.{i:03d}.nc", "w", format="NETCDF4")
+            ds.createDimension("time", None)
+            ds.createDimension("x", 4)
+            ds.createVariable("time", "f8", ("time",))[:] = [t0, t0 + 1800.0]
+            ds.createVariable("x", "f4", ("x",))[:] = np.arange(4)
+            ds.createVariable("theta", "f4", ("time", "x"))[:] = float(i)
+            ds.close()
+
+    # Truncate the middle cycle of the nest, as a killed job would.
+    bad = src / f"{CASE}_av_3d_N02.001.nc"
+    bad.write_bytes(bad.read_bytes()[:600])
+    # And every part of av_xy: nothing left to join.
+    for f in src.glob(f"{CASE}_av_xy.*.nc"):
+        f.write_bytes(f.read_bytes()[:600])
+
+    log = logging.getLogger("palm_postproc")
+    args = ("", ".nc", "filenum", True, 0, 0, 0, None, 4, True, False, log)
+    try:
+        ok_nest = _join_file(1, 3, f"{CASE}_av_3d_N02", str(src), str(dst),
+                             *args)
+        ok_main = _join_file(2, 3, f"{CASE}_av_3d", str(src), str(dst),
+                             *args)
+        ok_none = _join_file(3, 3, f"{CASE}_av_xy", str(src), str(dst),
+                             *args)
+    except Exception as exc:
+        check(False, f"join raised {type(exc).__name__}: {exc}", failures)
+        return
+
+    check(ok_nest, "a file with one unreadable part still joins", failures)
+    with Dataset(dst / f"{CASE}_av_3d_N02.nc") as ds:
+        times = [float(t) for t in ds.variables["time"][:]]
+        theta = [float(v) for v in ds.variables["theta"][:, 0]]
+    check(times == [1800.0, 3600.0, 9000.0, 10800.0],
+          f"the unreadable cycle's timesteps are the only ones missing, "
+          f"got {times}", failures)
+    check(theta == [0.0, 0.0, 2.0, 2.0],
+          "the readable cycles' data is intact", failures)
+    check(ok_main, "a healthy file joins alongside", failures)
+    check(not ok_none, "a file with no readable part fails", failures)
+    check(not (dst / f"{CASE}_av_xy.nc").exists(),
+          "nothing is written when no part is readable", failures)
+
+
+# ------------------------------
 # 6. OUTPUT VERIFICATION
 # ------------------------------
 def verify_chain(base, failures):
@@ -657,6 +722,7 @@ def run(keep=False):
     try:
         unit_checks(failures)
         join_interleave_check(tmp, failures)
+        join_unreadable_check(tmp, failures)
 
         print("\n-- building the synthetic dataset ------------------------")
         base = tmp / "main"

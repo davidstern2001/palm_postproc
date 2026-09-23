@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1
+
+**Join - an unreadable part no longer aborts the run**
+
+- Every part is opened before a file is joined. A part netCDF4 cannot
+  open (typically a restart cycle killed before PALM closed its files:
+  `NetCDF: HDF error`) is skipped with a warning and the remaining parts
+  are joined, so only that cycle's timesteps are missing. The skipped
+  parts are listed in the output's `palm_postproc_skipped_parts`
+  attribute and on the `wrote` line. Only a file with no readable part
+  at all fails. Previously the exception aborted the whole pipeline.
+- A join that fails after it started writing removes its partial output,
+  so the next run does not report it as `kept (exists)` and palm2gis
+  never reads a half-written file.
+
 ## 0.6.0
 
 **Config layout, shared with palm2gis and palm_preproc**

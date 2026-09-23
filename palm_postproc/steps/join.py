@@ -129,6 +129,25 @@ def _arrays_equal(a, b) -> bool:
     return np.array_equal(da, db)
 
 
+def _unreadable_parts(parts: list[str]) -> list[tuple[str, str]]:
+    """Return (name, reason) for every part netCDF4 cannot open.
+
+    A restart cycle killed before PALM closed its NetCDF files (walltime,
+    crash, full disk) leaves an HDF5 file without valid metadata; opening
+    it raises "NetCDF: HDF error". Checking every part up front turns that
+    into a clean per-file failure naming all bad parts, instead of an
+    exception that aborts the whole pipeline from wherever it is hit.
+    """
+    bad = []
+    for part in parts:
+        try:
+            with Dataset(part, "r"):
+                pass
+        except OSError as exc:
+            bad.append((Path(part).name, exc.strerror or str(exc)))
+    return bad
+
+
 def _check_part_geometry(parts: list[str], log: logging.Logger) -> str | None:
     """Verify every part describes the SAME grid / surface elements.
 
@@ -237,7 +256,8 @@ def _nc_copy_structure(
         return False
 
 
-def _stamp_join(nc_out: Dataset, cfg, cfg_hash: str, parts: list[str]) -> None:
+def _stamp_join(nc_out: Dataset, cfg, cfg_hash: str, parts: list[str],
+                skipped: list[str] | None = None) -> None:
     """Attach provenance attributes to a joined file, CF style.
 
     `history` is appended to, never replaced, so PALM's own history
@@ -253,6 +273,9 @@ def _stamp_join(nc_out: Dataset, cfg, cfg_hash: str, parts: list[str]) -> None:
     attrs["palm_postproc_source"] = os.pathsep.join(
         Path(p).name for p in parts)
     attrs["palm_postproc_n_parts"] = len(parts)
+    if skipped:
+        # Unreadable parts left out: the time axis has a gap there.
+        attrs["palm_postproc_skipped_parts"] = os.pathsep.join(skipped)
 
     line = (f"{attrs['palm_postproc_processed']}: palm_postproc "
             f"{__version__}: {attrs['palm_postproc_command']}")
@@ -315,6 +338,24 @@ def _join_file(
     t0 = time.monotonic()
 
     # Fail before writing anything, not halfway through.
+    # An unreadable part is dropped and the rest are joined: its timesteps
+    # are lost either way, and failing the whole file would lose every
+    # other cycle's too. The gap is recorded in the output's attributes.
+    bad = _unreadable_parts(parts)
+    if bad:
+        for name, reason in bad:
+            log.warning("[join] skipped unreadable part %s: %s (a restart "
+                        "cycle killed before closing its files, or still "
+                        "being written?) - its timesteps will be missing "
+                        "from %s.", name, reason, out_path.name)
+        bad_names = {name for name, _ in bad}
+        parts = [p for p in parts if Path(p).name not in bad_names]
+        if not parts:
+            log.error("[join] %s: no readable part left - not written.",
+                      out_path.name)
+            return False
+    skipped = [name for name, _ in bad]
+
     mismatch = _check_part_geometry(parts, log)
     if mismatch:
         # Join stitches parts along TIME and takes every other variable from
@@ -327,6 +368,38 @@ def _join_file(
 
     Path(finalpath).mkdir(parents=True, exist_ok=True)
 
+    # A failure past this point leaves a partially written file, which the
+    # next run would report as "kept (exists)" and hand to palm2gis. Remove
+    # it (only when this run created it) and fail this file alone.
+    try:
+        return _join_parts(parts, fout, out_path, create_new, offset_min,
+                           part_timeshift, output_timestep, merge_tol,
+                           complevel, t0, log, cfg, cfg_hash, skipped)
+    except (OSError, RuntimeError, ValueError, IndexError) as exc:
+        log.error("[join] %s failed: %s", out_path.name, exc)
+        if create_new:
+            out_path.unlink(missing_ok=True)
+            log.error("[join] partial %s removed", out_path.name)
+        return False
+
+
+def _join_parts(
+    parts:           list[str],
+    fout:            str,
+    out_path:        Path,
+    create_new:      bool,
+    offset_min:      int,
+    part_timeshift:  int,
+    output_timestep: int,
+    merge_tol:       float | None,
+    complevel:       int,
+    t0:              float,
+    log:             logging.Logger,
+    cfg:             Config | None,
+    cfg_hash:        str,
+    skipped:         list[str],
+) -> bool:
+    """Phases 1-3 of _join_file, once the parts are known to be readable."""
     # --- Phase 1: copy structure -------------------------------------------
     log.debug("[join] phase 1/3: copying structure from %s", Path(parts[0]).name)
     if create_new:
@@ -350,7 +423,7 @@ def _join_file(
     # confirm a file is join output rather than infer it from the absence
     # of coord's fingerprints.
     if cfg is not None:
-        _stamp_join(nc_out, cfg, cfg_hash, parts)
+        _stamp_join(nc_out, cfg, cfg_hash, parts, skipped)
 
     # Identify time-dependent variables
     nc_vars = nc_out.variables
@@ -528,9 +601,10 @@ def _join_file(
         ncp.close()
 
     nc_out.close()
-    log.info("[join] wrote %s: %d part(s), %d time(s), %s in %s",
-             out_path.name, len(pinfo), len(tsteps), fmt_size(out_path),
-             fmt_elapsed(t0))
+    log.info("[join] wrote %s: %d part(s)%s, %d time(s), %s in %s",
+             out_path.name, len(pinfo),
+             f" ({len(skipped)} unreadable skipped)" if skipped else "",
+             len(tsteps), fmt_size(out_path), fmt_elapsed(t0))
     return True
 
 
