@@ -8,16 +8,18 @@ Post-processing pipeline for PALM large-eddy simulation NetCDF output.
 
 ## Overview
 
-`palm_postproc` orchestrates four sequential processing steps on PALM `_av_xy` and `_av_3d` output files:
+`palm_postproc` orchestrates five sequential processing steps on PALM `_av_xy` and `_av_3d` output files:
 
 | Step | Script | What it does |
 |------|--------|--------------|
+| `join` | `steps/join.py` | Stitches the restart-cycle parts of each file into one NetCDF |
 | `splitvar` | `steps/splitvar.py` | Splits into one NetCDF per variable |
 | `splitz` | `steps/splitz.py` | Restricts 3D files to z ≤ `region.z_max` |
 | `splittime` | `steps/splittime.py` | Subsamples or slices the time dimension |
 | `coord` | `steps/coord.py` | Appends UTM / WGS84 georeferenced coordinates |
 
-Each step can be individually enabled or disabled in the config file.
+The blocks of the config file decide which steps run (see
+[Config reference](#config-reference)).
 
 ---
 
@@ -25,22 +27,30 @@ Each step can be individually enabled or disabled in the config file.
 
 ```
 palm_postproc/
-├── palm_postproc/          # installable package
+├── palm_postproc/
 │   ├── __init__.py
-│   ├── config.py
+│   ├── config.py           # loads and validates a YAML config
+│   ├── layout.py           # the 0.6 config layout -> internal settings
+│   ├── timespec.py         # the time: window vocabulary
+│   ├── state.py            # resume state (skips unchanged outputs)
 │   ├── log.py
+│   ├── utils.py
 │   ├── pipeline.py
 │   └── steps/
+│       ├── join.py
 │       ├── splitvar.py
 │       ├── splitz.py
 │       ├── splittime.py
 │       └── coord.py
-├── config/                # one YAML per job — user-managed
-│   └── holesovice_now.yaml
+├── config/                 # one YAML per job — user-managed
+│   └── join_only.yaml      # example: join only, the feed for palm2gis
+├── tools/
+│   └── diag_join_times.py  # inspects part time axes when a join fails
 ├── run_postproc.py         # entry point
 ├── test.py                 # synthetic self-test (no real data needed)
 ├── template.yaml           # fully-commented config template
 ├── requirements.txt
+├── CHANGELOG.md
 ├── LICENSE
 └── README.md
 ```

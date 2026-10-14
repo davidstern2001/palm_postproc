@@ -29,6 +29,16 @@ from ..utils import fmt_elapsed, fmt_size, should_write
 # Helpers (logic unchanged from palm_joinoutputs.py)
 # ---------------------------------------------------------------------------
 
+def _part_order(path: str) -> list:
+    """Sort key that orders the numbers in a part name numerically.
+
+    A plain sort puts .part10 and .part11 before .part2. Part order is not
+    cosmetic: where cycles overlap the later part's data wins, and
+    part_timeshift is applied as index * shift.
+    """
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", path)]
+
+
 def _partnames(
     origpath:    str,
     origfile:    str,
@@ -40,21 +50,21 @@ def _partnames(
     parts = []
     if convention == "dirpart":
         parts.extend(glob.glob(os.path.join(origpath + ".part*", origfile + file_suffix)))
-        parts.sort()
+        parts.sort(key=_part_order)
         parts.insert(0, os.path.join(origpath, origfile + file_suffix))
     elif convention == "filepart":
         parts.extend(glob.glob(os.path.join(origpath, origfile + ".part*" + file_suffix)))
-        parts.sort()
+        parts.sort(key=_part_order)
         parts.insert(0, os.path.join(origpath, origfile + file_suffix))
     elif convention == "tmpdir":
         parts.extend(glob.glob(os.path.join(origpath + ".*", origfile + file_suffix)))
-        parts.sort()
+        parts.sort(key=_part_order)
     elif convention == "filenum":
         parts.extend(glob.glob(os.path.join(origpath, origfile + ".*" + file_suffix)))
-        parts.sort()
+        parts.sort(key=_part_order)
     elif convention == "filepattern":
         parts.extend(glob.glob(os.path.join(origpath, file_prefix + origfile + file_suffix + "*")))
-        parts.sort()
+        parts.sort(key=_part_order)
     elif convention == "singlefile":
         parts = [os.path.join(origpath, origfile + file_suffix)]
     log.debug("[join] parts: %s", [Path(p).name for p in parts])
@@ -96,6 +106,17 @@ def _merge_tolerance(tsteps: list, output_timestep: int,
     if diffs.size == 0:
         return 1e-6
     return max(min(float(np.median(diffs)) * 0.25, AUTO_MERGE_TOL_MAX), 1e-6)
+
+
+def _on_output_step(ts: float, output_timestep: int) -> bool:
+    """True if ts lies within 1 s of a multiple of output_timestep.
+
+    Restart-boundary jitter falls on either side of the step: 3599.8 s is
+    the 3600 s record just as much as 3600.2 s is. Measuring only the
+    remainder after the multiple below dropped the early ones.
+    """
+    rem = ts % output_timestep
+    return min(rem, output_timestep - rem) < 1
 
 
 def _shape_ok(vn, dst_var, src_var, partname: str, log: logging.Logger) -> bool:
@@ -372,15 +393,16 @@ def _join_file(
     # next run would report as "kept (exists)" and hand to palm2gis. Remove
     # it (only when this run created it) and fail this file alone.
     try:
-        return _join_parts(parts, fout, out_path, create_new, offset_min,
-                           part_timeshift, output_timestep, merge_tol,
-                           complevel, t0, log, cfg, cfg_hash, skipped)
+        ok = _join_parts(parts, fout, out_path, create_new, offset_min,
+                         part_timeshift, output_timestep, merge_tol,
+                         complevel, t0, log, cfg, cfg_hash, skipped)
     except (OSError, RuntimeError, ValueError, IndexError) as exc:
         log.error("[join] %s failed: %s", out_path.name, exc)
-        if create_new:
-            out_path.unlink(missing_ok=True)
-            log.error("[join] partial %s removed", out_path.name)
-        return False
+        ok = False
+    if not ok and create_new:
+        out_path.unlink(missing_ok=True)
+        log.error("[join] partial %s removed", out_path.name)
+    return ok
 
 
 def _join_parts(
@@ -402,17 +424,41 @@ def _join_parts(
     """Phases 1-3 of _join_file, once the parts are known to be readable."""
     # --- Phase 1: copy structure -------------------------------------------
     log.debug("[join] phase 1/3: copying structure from %s", Path(parts[0]).name)
-    if create_new:
-        nc_out = Dataset(fout, "w", format="NETCDF4")
-        nc_in  = Dataset(parts[0], "r", format="NETCDF4")
-        if not _nc_copy_structure(nc_in, nc_out, complevel, log):
-            log.error("[join] structure copy failed - %s aborted", out_path.name)
-            nc_in.close()
+    nc_out = Dataset(fout, "w" if create_new else "a", format="NETCDF4")
+    # Closed on every exit. _join_file removes a failed output, and an
+    # exception would otherwise leave its handle open for the whole run.
+    try:
+        return _fill_joined(nc_out, parts, out_path, create_new, offset_min,
+                            part_timeshift, output_timestep, merge_tol,
+                            complevel, t0, log, cfg, cfg_hash, skipped)
+    finally:
+        if nc_out.isopen():
             nc_out.close()
-            return False
-        nc_in.close()
-    else:
-        nc_out = Dataset(fout, "a", format="NETCDF4")
+
+
+def _fill_joined(
+    nc_out:          Dataset,
+    parts:           list[str],
+    out_path:        Path,
+    create_new:      bool,
+    offset_min:      int,
+    part_timeshift:  int,
+    output_timestep: int,
+    merge_tol:       float | None,
+    complevel:       int,
+    t0:              float,
+    log:             logging.Logger,
+    cfg:             Config | None,
+    cfg_hash:        str,
+    skipped:         list[str],
+) -> bool:
+    """Phases 1-3 into an open nc_out; closes it before logging the result."""
+    if create_new:
+        with Dataset(parts[0], "r", format="NETCDF4") as nc_in:
+            if not _nc_copy_structure(nc_in, nc_out, complevel, log):
+                log.error("[join] structure copy failed - %s aborted",
+                          out_path.name)
+                return False
 
     # Provenance, written here so every exit path below carries it.
     #
@@ -451,31 +497,28 @@ def _join_parts(
         ptshift = ip * part_timeshift
         log.debug("[join] part %d/%d: %s, shift %d", ip + 1, len(parts),
                   Path(part).name, ptshift)
-        ncp = Dataset(part, "r", format="NETCDF4")
+        with Dataset(part, "r", format="NETCDF4") as ncp:
+            if "time" not in ncp.variables:
+                log.warning("[join] part %s has no 'time' variable - skipped.",
+                            Path(part).name)
+                continue
+            ptime = ncp.variables["time"]
 
-        if "time" not in ncp.variables:
-            log.warning("[join] part %s has no 'time' variable - skipped.",
-                        Path(part).name)
-            ncp.close()
-            continue
-
-        ptime = ncp.variables["time"]
-
-        ptsteps: list = []
-        offset = offset_min
-        for i2 in range(len(ptime)):
-            if not ptime[i2].mask:
-                offset = max(offset_min, i2)
-                break
-        if offset is not None:
-            for i2 in range(offset, len(ptime)):
-                if ptime[i2].mask:
-                    break
-                ptsteps.append(ptime[i2].data.item(0))
-            for i2 in range(offset + len(ptsteps), len(ptime)):
+            ptsteps: list = []
+            offset = offset_min
+            for i2 in range(len(ptime)):
                 if not ptime[i2].mask:
-                    log.warning("[join] discontinuous timestep %d (t=%s) in %s",
-                                i2, ptime[i2], Path(part).name)
+                    offset = max(offset_min, i2)
+                    break
+            if offset is not None:
+                for i2 in range(offset, len(ptime)):
+                    if ptime[i2].mask:
+                        break
+                    ptsteps.append(ptime[i2].data.item(0))
+                for i2 in range(offset + len(ptsteps), len(ptime)):
+                    if not ptime[i2].mask:
+                        log.warning("[join] discontinuous timestep %d (t=%s) "
+                                    "in %s", i2, ptime[i2], Path(part).name)
         if ptsteps:
             pinfo[part] = {
                 "nts":     len(ptsteps),
@@ -486,7 +529,6 @@ def _join_parts(
             }
             log.debug("[join] %d valid timestep(s), t = %.0f .. %.0f",
                       len(ptsteps), ptsteps[0], ptsteps[-1])
-        ncp.close()
 
     if not pinfo:
         log.warning("[join] no valid timesteps for %s - its time axis is "
@@ -522,10 +564,7 @@ def _join_parts(
                  len(tsteps2) - len(tsteps), tol)
 
     if output_timestep > 1:
-        tsteps = [
-            ts for ts in tsteps
-            if int(ts) - int(ts / output_timestep) * output_timestep < 1
-        ]
+        tsteps = [ts for ts in tsteps if _on_output_step(ts, output_timestep)]
 
     if not tsteps:
         log.warning("[join] all timesteps of %s filtered out - nothing written.",
@@ -575,30 +614,32 @@ def _join_parts(
         log.debug("[join] part %d/%d: %s -> %d timestep(s), global [%d..%d]",
                   ip + 1, len(pinfo), Path(pi["file"]).name,
                   len(tmap), tmap[0][1], tmap[-1][1])
-        ncp   = Dataset(pi["file"], "r", format="NETCDF4")
-        pvars = ncp.variables
+        with Dataset(pi["file"], "r", format="NETCDF4") as ncp:
+            pvars = ncp.variables
 
-        for src, dst in tmap:
-            nc_vars["time"][dst] = float(pvars["time"][src]) + pi["ptshift"]
-
-        for v in vcp:
-            if v == "time":
-                continue        # already written above, with ptshift applied
-            if v not in pvars:
-                log.warning("[join] %s not in part %s - skipped.",
-                            v, Path(part).name)
-                continue
-            nd = len(nc_vars[v].dimensions)
-            vs = nc_vars[v].shape
-            if nd > 6:
-                log.warning("[join] %s has too many dimensions - skipped.", v)
-                continue
-            if not _shape_ok(v, nc_vars[v], pvars[v], Path(part).name, log):
-                continue
-            sl = tuple(slice(0, vs[k]) for k in range(1, nd))
             for src, dst in tmap:
-                nc_vars[v][(dst,) + sl] = pvars[v][(src,) + sl]
-        ncp.close()
+                nc_vars["time"][dst] = (float(pvars["time"][src])
+                                        + pi["ptshift"])
+
+            for v in vcp:
+                if v == "time":
+                    continue        # written above, with ptshift applied
+                if v not in pvars:
+                    log.warning("[join] %s not in part %s - skipped.",
+                                v, Path(part).name)
+                    continue
+                nd = len(nc_vars[v].dimensions)
+                vs = nc_vars[v].shape
+                if nd > 6:
+                    log.warning("[join] %s has too many dimensions - "
+                                "skipped.", v)
+                    continue
+                if not _shape_ok(v, nc_vars[v], pvars[v], Path(part).name,
+                                 log):
+                    continue
+                sl = tuple(slice(0, vs[k]) for k in range(1, nd))
+                for src, dst in tmap:
+                    nc_vars[v][(dst,) + sl] = pvars[v][(src,) + sl]
 
     nc_out.close()
     log.info("[join] wrote %s: %d part(s)%s, %d time(s), %s in %s",

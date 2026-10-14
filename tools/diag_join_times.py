@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-diag_join_times.py
-------------------
+tools/diag_join_times.py
+------------------------
 Inspects the time axes of the part files that palm_postproc's join step
 stitches together, and reports where they overlap, interleave or disagree.
 
@@ -53,8 +53,10 @@ def detect_stems(outdir, suffix):
 
 
 def part_files(outdir, stem, suffix):
-    """Same 'filenum' convention as join._partnames."""
-    return sorted(glob.glob(os.path.join(outdir, stem + ".*" + suffix)))
+    """Same 'filenum' convention and numeric order as join._partnames."""
+    return sorted(glob.glob(os.path.join(outdir, stem + ".*" + suffix)),
+                  key=lambda p: [int(t) if t.isdigit() else t
+                                 for t in re.split(r"(\d+)", p)])
 
 
 def read_part(path):

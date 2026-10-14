@@ -2,5 +2,6 @@ xarray>=2023.1
 netCDF4
 numpy
 pyyaml
+pyproj
 # optional but strongly recommended for large files:
 dask[array]

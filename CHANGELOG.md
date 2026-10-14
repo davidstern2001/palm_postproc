@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.2
+
+**Join - part order, output step and failure cleanup**
+
+- Part files are ordered by the numbers in their names, not as text.
+  With ten or more `.partN` parts, `.part10` used to sort before
+  `.part2`: where cycles overlap an earlier cycle then won over a later
+  one, and `part_timeshift` was applied with the wrong index.
+- `output_timestep` keeps a record within 1 s of a step on either side.
+  Restart jitter just before the step (3599.8 s on an hourly axis) used
+  to be dropped; only jitter just after it was kept.
+- A failed join closes its output and every part before the partial
+  file is removed. A structure-copy failure now removes its file too.
+- `pyproj` added to `requirements.txt`; `coord` imports it, so a fresh
+  install could not run the self-test.
+- `diag_join_times.py` moved to `tools/`, and orders parts the same way.
+- The self-test runs in GitHub Actions on Python 3.10 and 3.13.
+- README: five steps including `join`, and a current directory tree.
+
 ## 0.6.1
 
 **Join - an unreadable part no longer aborts the run**

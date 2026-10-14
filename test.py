@@ -285,6 +285,18 @@ def unit_checks(failures):
     check(_merge_tolerance([42.0], 0, None) > 0.0,
           "_merge_tolerance survives a single timestep", failures)
 
+    from palm_postproc.steps.join import _on_output_step, _part_order
+
+    names = ["OUT.part1/x.nc", "OUT.part10/x.nc", "OUT.part2/x.nc"]
+    check(sorted(names, key=_part_order)
+          == ["OUT.part1/x.nc", "OUT.part2/x.nc", "OUT.part10/x.nc"],
+          "_part_order sorts .part2 before .part10", failures)
+    check(_on_output_step(3600.2, 3600) and _on_output_step(3599.8, 3600),
+          "_on_output_step keeps jitter on both sides of the step", failures)
+    check(not _on_output_step(1800.0, 3600)
+          and not _on_output_step(3601.5, 3600),
+          "_on_output_step drops records off the step", failures)
+
 
 # ------------------------------
 # 5b. JOIN REGRESSION: INTERLEAVED RESTART CYCLES
@@ -343,6 +355,55 @@ def join_interleave_check(root, failures):
     check([float(theta[i, 0, 0, 0]) for i in range(len(times))]
           == [0.0, 0.0, 1.0, 2.0, 1.0, 2.0, 1.0],
           "each timestep came from the part that owns it", failures)
+
+
+# ------------------------------
+# 5b2. JOIN REGRESSION: MORE THAN NINE PARTS
+# ------------------------------
+def join_part_order_check(root, failures):
+    """
+    Part names were sorted as text, so .part10 came before .part2. Where
+    restart cycles overlap the later part must win, and with eleven parts
+    part9 used to overwrite part10's data at their shared timestep.
+    """
+    print("\n-- join: more than nine parts -----------------------------")
+    import logging
+    import numpy as np
+    from netCDF4 import Dataset
+    from palm_postproc.steps.join import _join_file
+
+    src = root / "partorder" / "OUTPUT"
+    dst = root / "partorder" / "OUTPUT_join"
+    src.mkdir(parents=True, exist_ok=True)
+
+    # The base file is cycle 0, .partN is cycle N; each cycle overlaps the
+    # next by one timestep, as a restart cycle rewrites its start record.
+    stem = f"{CASE}_av_3d"
+    for i in range(11):
+        name = f"{stem}.nc" if i == 0 else f"{stem}.part{i}.nc"
+        with Dataset(src / name, "w", format="NETCDF4") as ds:
+            ds.createDimension("time", None)
+            ds.createDimension("x", 4)
+            ds.createVariable("time", "f8", ("time",))[:] = \
+                [i * 1800.0, (i + 1) * 1800.0]
+            ds.createVariable("x", "f4", ("x",))[:] = np.arange(4)
+            ds.createVariable("theta", "f4", ("time", "x"))[:] = float(i)
+
+    log = logging.getLogger("palm_postproc")
+    try:
+        ok = _join_file(1, 1, stem, str(src), str(dst),
+                        "", ".nc", "filepart", True, 0, 0, 0, None, 4,
+                        True, False, log)
+    except Exception as exc:
+        check(False, f"join raised {type(exc).__name__}: {exc}", failures)
+        return
+
+    check(ok, "join of eleven parts returned OK", failures)
+    with Dataset(dst / f"{stem}.nc") as ds:
+        theta = [float(v) for v in ds.variables["theta"][:, 0]]
+    check(theta == [0.0] + [float(i) for i in range(1, 11)] + [10.0],
+          f"each overlap is won by the numerically later part, got {theta}",
+          failures)
 
 
 # ------------------------------
@@ -722,6 +783,7 @@ def run(keep=False):
     try:
         unit_checks(failures)
         join_interleave_check(tmp, failures)
+        join_part_order_check(tmp, failures)
         join_unreadable_check(tmp, failures)
 
         print("\n-- building the synthetic dataset ------------------------")
