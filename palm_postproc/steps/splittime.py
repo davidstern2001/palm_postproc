@@ -142,7 +142,7 @@ def _process_file(
     step_cfg: SplittimeConfig = cfg.steps.splittime
 
     is_3d  = "_av_3d" in src_path.stem
-    chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d)
+    chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d, src_path)
     ds     = open_dataset(src_path, chunks)
 
     if "time" not in ds.dims:

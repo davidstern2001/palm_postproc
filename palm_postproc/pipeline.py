@@ -202,7 +202,7 @@ def _process_file_chained(
     is_3d = "_av_3d" in stem
 
     out_dir = _final_output_dir(cfg, only)
-    chunks  = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d)
+    chunks  = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d, src_path)
 
     # --- Peek pass: determine what outputs this file will produce -----------
     ds_peek = xr.open_dataset(src_path, engine="netcdf4", chunks=chunks,

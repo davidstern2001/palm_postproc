@@ -96,13 +96,60 @@ def open_dataset(src_path: Path, chunks: dict | None) -> xr.Dataset:
     )
 
 
-def try_dask_chunks(chunks_2d: dict, chunks_3d: dict, is_3d: bool) -> dict | None:
-    """Return chunk dict if dask is available, else None."""
+def try_dask_chunks(chunks_2d: dict, chunks_3d: dict, is_3d: bool,
+                    src_path: Path | None = None) -> dict | None:
+    """Return chunk dict if dask is available, else None.
+
+    With src_path the chunks are aligned to how the file is stored, see
+    _align_chunks.
+    """
     try:
         import dask  # noqa: F401
-        return chunks_3d if is_3d else chunks_2d
     except ImportError:
         return None
+    chunks = chunks_3d if is_3d else chunks_2d
+    if src_path is None:
+        return chunks
+    return _align_chunks(chunks, src_path)
+
+
+def _align_chunks(chunks: dict, src_path: Path) -> dict:
+    """Fit the requested dask chunks to the file's stored chunks.
+
+    A joined file stores each 3D variable in compressed chunks that span
+    the whole column or more (netCDF-C default chunking, e.g. [1, 80, 200,
+    200]). Asking dask for zu_3d=10 cut every stored chunk into several
+    reads, and each read decompresses the whole chunk again: correct but
+    several times slower, and xarray warns on every file. So each requested
+    size is rounded up to a whole number of stored chunks, and a dimension
+    stored in pieces smaller than its length is chunked as stored, which
+    keeps a dask chunk the size of a few stored ones.
+    """
+    from netCDF4 import Dataset
+
+    stored: dict = {}
+    sizes:  dict = {}
+    with Dataset(src_path, "r") as nc:
+        for dn, d in nc.dimensions.items():
+            sizes[dn] = len(d)
+        for v in nc.variables.values():
+            layout = v.chunking()
+            if layout == "contiguous" or layout is None:
+                continue
+            for dn, c in zip(v.dimensions, layout):
+                stored[dn] = max(stored.get(dn, 0), int(c))
+
+    out = {}
+    for dn, s in stored.items():
+        if dn in chunks:
+            n = int(chunks[dn])
+            out[dn] = -(-n // s) * s           # ceil to a multiple of s
+        elif s < sizes.get(dn, 0):
+            out[dn] = s
+    # A requested dimension the file does not chunk keeps the request.
+    for dn, n in chunks.items():
+        out.setdefault(dn, n)
+    return out
 
 
 # ---------------------------------------------------------------------------

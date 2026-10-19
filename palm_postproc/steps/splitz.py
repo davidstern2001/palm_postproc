@@ -92,7 +92,8 @@ def _process_file(
         log.debug("[splitz] skipping non-3D file: %s", src_path.name)
         return True
 
-    chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d=True)
+    chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d=True,
+                             src_path=src_path)
     ds     = open_dataset(src_path, chunks)
 
     if z_coord not in ds.coords:

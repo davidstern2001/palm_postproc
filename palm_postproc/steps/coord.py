@@ -601,7 +601,7 @@ def _process_file(
         return True
 
     is_3d  = "_av_3d" in src_path.stem
-    chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d)
+    chunks = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d, src_path)
 
     out_path = out_dir / _output_name(src_path)
     if not should_write(out_path, cfg.overwrite, log, "coord"):

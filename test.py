@@ -299,6 +299,32 @@ def unit_checks(failures):
 
 
 # ------------------------------
+# 5a. CHUNKS ALIGNED TO STORAGE
+# ------------------------------
+def chunk_alignment_check(root, failures):
+    """
+    zu_3d=10 split the whole-column chunks join writes, so every stored
+    chunk was decompressed several times and xarray warned on every file.
+    """
+    print("\n-- dask chunks follow the stored chunks ------------------")
+    from netCDF4 import Dataset
+    from palm_postproc.utils import _align_chunks
+
+    path = root / "chunks.nc"
+    with Dataset(path, "w", format="NETCDF4") as ds:
+        ds.createDimension("time", None)
+        ds.createDimension("zu_3d", 24)
+        ds.createDimension("y", 16)
+        ds.createDimension("x", 16)
+        ds.createVariable("theta", "f4", ("time", "zu_3d", "y", "x"),
+                          zlib=True, chunksizes=(1, 12, 8, 16))[0] = 1.0
+
+    got = _align_chunks({"time": 4, "zu_3d": 10}, path)
+    check(got == {"time": 4, "zu_3d": 12, "y": 8},
+          f"chunks rounded up to whole stored chunks, got {got}", failures)
+
+
+# ------------------------------
 # 5b. JOIN REGRESSION: INTERLEAVED RESTART CYCLES
 # ------------------------------
 def join_interleave_check(root, failures):
@@ -782,6 +808,7 @@ def run(keep=False):
     tmp = Path(tempfile.mkdtemp(prefix="palm_postproc_test_"))
     try:
         unit_checks(failures)
+        chunk_alignment_check(tmp, failures)
         join_interleave_check(tmp, failures)
         join_part_order_check(tmp, failures)
         join_unreadable_check(tmp, failures)

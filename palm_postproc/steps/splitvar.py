@@ -89,7 +89,7 @@ def _split_file(
     log.debug("[splitvar] %s -> mode=%s", src_path.name, mode)
 
     is_3d    = (mode == "3D")
-    chunks   = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d)
+    chunks   = try_dask_chunks(_CHUNKS_2D, _CHUNKS_3D, is_3d, src_path)
     step_cfg = cfg.steps.splitvar
 
     ds = open_dataset(src_path, chunks)

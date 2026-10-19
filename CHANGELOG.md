@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.3
+
+**Chunked reads follow the stored chunks**
+
+- Every step asked dask for `zu_3d` chunks of 10 levels. Joined files
+  store a 3D variable in compressed chunks spanning the whole column (or
+  half of it), so each stored chunk was decompressed several times and
+  xarray warned `The specified chunks separate the stored chunks along
+  dimension "zu_3d"` on every file. Requested chunk sizes are now
+  rounded up to whole stored chunks, and a dimension stored in smaller
+  pieces than its length is read in those pieces. Results are unchanged.
+
 ## 0.6.2
 
 **Join - part order, output step and failure cleanup**
