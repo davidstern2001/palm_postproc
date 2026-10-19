@@ -57,8 +57,9 @@ input:
 # 3. VARIABLES   what to keep
 # ---------------------------------------------------------------------
 # One file per variable, so a 3D file can be opened without loading the
-# rest. `all` takes every variable; a list takes those names (wildcards
-# allowed); `none` skips that file type.
+# rest. `all` takes every variable with a time axis (the grid index
+# fields ind_z_xy, zusi, zwwi stay in the joined file); a list takes those
+# names (wildcards allowed); `none` skips that file type.
 variables:
     av_xy: all                   # e.g. [tsurf*_xy, ta_2m*_xy, bio_utci*_xy]
     av_3d: all                   # e.g. [u, v, w, theta, ta]

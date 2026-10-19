@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.4
+
+**`all` no longer splits out time-invariant grid fields**
+
+- `variables.av_xy: all` / `av_3d: all` take every variable with a time
+  axis. The grid index fields PALM writes alongside the results
+  (`ind_z_xy`, `zusi`, `zwwi`) used to become their own few-kB files in
+  the analysis directory. They remain in `OUTPUT_join`, and naming one
+  in a variable list still writes it.
+
 ## 0.6.3
 
 **Chunked reads follow the stored chunks**

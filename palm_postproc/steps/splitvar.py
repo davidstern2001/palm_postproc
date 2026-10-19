@@ -46,8 +46,13 @@ def _resolve_vars(
     """
     Resolve variable list from 'all', 'none', None (blank), or an explicit list.
     'none' / None / blank -> skip all variables of this type (return empty list).
-    'all'                 -> return every variable in the dataset.
+    'all'                 -> every variable with a time axis.
     [list]                -> return only variables that exist, warn about missing.
+
+    `all` leaves out the time-invariant grid fields PALM writes next to the
+    results (ind_z_xy, zusi, zwwi): each became an empty-looking file of a
+    few kB in the analysis directory. They stay in the joined file, and a
+    list that names one still writes it.
     """
     if requested is None or (isinstance(requested, str) and requested.strip().lower() == "none"):
         log.debug("[splitvar] vars_%s is empty - %s files skipped.",
@@ -55,7 +60,11 @@ def _resolve_vars(
         return []
 
     if requested == "all":
-        return list(ds.data_vars)
+        static = [v for v in ds.data_vars if "time" not in ds[v].dims]
+        if static:
+            log.debug("[splitvar] time-invariant, not split out: %s",
+                      ", ".join(static))
+        return [v for v in ds.data_vars if v not in static]
 
     available = list(ds.data_vars)
     resolved  = []

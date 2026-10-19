@@ -285,6 +285,18 @@ def unit_checks(failures):
     check(_merge_tolerance([42.0], 0, None) > 0.0,
           "_merge_tolerance survives a single timestep", failures)
 
+    import logging
+    import xarray as xr
+    from palm_postproc.steps.splitvar import _resolve_vars
+    ds = xr.Dataset({"u": (("time", "x"), np.zeros((2, 3))),
+                     "zusi": (("x",), np.zeros(3))})
+    lg = logging.getLogger("palm_postproc")
+    check(_resolve_vars(ds, "all", lg, "3D") == ["u"],
+          "_resolve_vars('all') leaves out time-invariant fields", failures)
+    check(_resolve_vars(ds, ["u", "zusi"], lg, "3D") == ["u", "zusi"],
+          "_resolve_vars keeps a time-invariant field named in a list",
+          failures)
+
     from palm_postproc.steps.join import _on_output_step, _part_order
 
     names = ["OUT.part1/x.nc", "OUT.part10/x.nc", "OUT.part2/x.nc"]
@@ -602,12 +614,9 @@ def verify_chain(base, failures):
                 check(ds[v].attrs.get("units") == "degrees_C",
                       f"{label} converted to degrees_C too", failures)
 
-    # time-invariant variable keeps no unlimited time dimension
-    inv = list(coord_dir.glob("*ind_z_xy*.nc"))
-    if inv:
-        with xr.open_dataset(inv[0], decode_times=False) as ds:
-            check("time" not in ds.dims,
-                  "time-invariant variable has no time dimension", failures)
+    # `all` leaves the time-invariant grid fields in the joined file
+    check(not list(coord_dir.glob("*ind_z_xy*.nc")),
+          "time-invariant ind_z_xy is not split out by `all`", failures)
 
 
 def verify_resume(base, cfg_path, failures):
