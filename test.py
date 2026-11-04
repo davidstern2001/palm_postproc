@@ -535,6 +535,19 @@ def verify_chain(base, failures):
     produced = sorted(p.name for p in coord_dir.glob("*.nc"))
     check(len(produced) > 0, f"coord wrote {len(produced)} file(s)", failures)
 
+    # palm2gis takes stage "join" as confirmation; analysis output used to
+    # inherit it from the joined file.
+    stages = set()
+    for p in coord_dir.glob("*.utm.nc"):
+        with xr.open_dataset(p, decode_times=False) as ds:
+            stages.add(ds.attrs.get("palm_postproc_stage"))
+    check(stages == {"coord"},
+          f"chain output is marked stage 'coord', got {stages}", failures)
+    if joined:
+        with xr.open_dataset(joined[0], decode_times=False) as ds:
+            check(ds.attrs.get("palm_postproc_stage") == "join",
+                  "joined file is still marked stage 'join'", failures)
+
     # splitvar: '*' stripped from the filename, uvw grouped
     names = " ".join(produced)
     check("*" not in names, "no '*' in output filenames", failures)
@@ -663,10 +676,22 @@ def verify_classic(root, failures):
 
     if ok:
         check(True, "classic mode ran without raising", failures)
+        import xarray as xr
         for step in ("splitvar", "splitz", "splittime", "coord"):
             d = base / CASE / f"OUTPUT_{step}"
-            check(d.is_dir() and any(d.glob("*.nc")),
-                  f"classic mode produced OUTPUT_{step}/", failures)
+            if not check(d.is_dir() and any(d.glob("*.nc")),
+                         f"classic mode produced OUTPUT_{step}/", failures):
+                continue
+            # time-invariant files skip splittime and coord, so check
+            # the files that carry time
+            stages = set()
+            for f in d.glob("*.nc"):
+                with xr.open_dataset(f, decode_times=False) as ds:
+                    if "time" in ds.dims:
+                        stages.add(ds.attrs.get("palm_postproc_stage"))
+            check(stages == {step},
+                  f"classic OUTPUT_{step}/ marked stage '{step}', got "
+                  f"{stages}", failures)
 
 
 def verify_only(root, failures):

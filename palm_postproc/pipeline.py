@@ -273,12 +273,16 @@ def _process_file_chained(
 
         try:
             ds_work = ds_var
+            # The last step applied, recorded as palm_postproc_stage.
+            stage = "splitvar" if _step_enabled("splitvar", cfg, only) else None
 
             if _step_enabled("splitz", cfg, only) and is_3d:
                 ds_work = _apply_splitz(ds_work, cfg)
+                stage = "splitz"
 
             if _step_enabled("splittime", cfg, only) and _has_time(ds_work):
                 ds_work = _apply_splittime(ds_work, cfg)
+                stage = "splittime"
 
             if _step_enabled("coord", cfg, only):
                 if not _has_time(ds_work):
@@ -286,6 +290,7 @@ def _process_file_chained(
                               out_path.name)
                 else:
                     ds_work = _apply_coord(ds_work, src_path, cfg)
+                    stage = "coord"
 
             # Drop time-invariant datasets' lingering 'time' coordinate before
             # writing, so the file does not declare an unlimited 'time'
@@ -303,7 +308,7 @@ def _process_file_chained(
                 # UserWarning on every time-invariant variable written.
                 ds_work.encoding.pop("unlimited_dims", None)
 
-            ds_work = stamp_provenance(ds_work, cfg, cfg_h, src_path)
+            ds_work = stamp_provenance(ds_work, cfg, cfg_h, src_path, stage)
 
             encoding = {
                 v: {"zlib": True, "complevel": cfg.complevel, "shuffle": True}

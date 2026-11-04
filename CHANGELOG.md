@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.5
+
+**Analysis output no longer claims to be join output**
+
+- `palm_postproc_stage` names the step that wrote each file: `splitvar`,
+  `splitz`, `splittime` or `coord`. It used to be copied unchanged from
+  the joined input, so every `OUTPUT_post` file said `join` - the marker
+  palm2gis reads as confirmation that a file is its intended input, on
+  files whose origin and units were already applied.
+- template.yaml: `coordinates: wgs84` / `both` warn about GDAL older than
+  3.6 (QGIS 3.28 on Ubuntu 22.04). It takes the 2-D lat/lon as
+  geolocation arrays and drops the UTM grid, placing the data at the
+  UTM 33N origin - the equator in Gabon - upside down. `utm` reads
+  correctly in GDAL 3.5 and later and in QGIS mesh layers.
+
 ## 0.6.4
 
 **`all` no longer splits out time-invariant grid fields**

@@ -131,7 +131,8 @@ def _split_file(
         if should_write(out_path, cfg.overwrite, log, "splitvar"):
             t0 = time.monotonic()
             try:
-                write_dataset(ds[group_vars], out_path, cfg.complevel)
+                write_dataset(ds[group_vars], out_path, cfg.complevel,
+                              stage="splitvar")
                 log.info("[splitvar] wrote %s: %s, %s in %s", out_path.name,
                          ", ".join(group_vars), fmt_size(out_path),
                          fmt_elapsed(t0))
@@ -147,7 +148,8 @@ def _split_file(
             continue
         t0 = time.monotonic()
         try:
-            write_dataset(ds[[varname]], out_path, cfg.complevel)
+            write_dataset(ds[[varname]], out_path, cfg.complevel,
+                          stage="splitvar")
             log.info("[splitvar] wrote %s: %s in %s", out_path.name,
                      fmt_size(out_path), fmt_elapsed(t0))
         except Exception as exc:

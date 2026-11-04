@@ -49,17 +49,34 @@ def provenance_attrs(cfg, cfg_hash: str, src_path: Path | None = None) -> dict:
 
 
 def stamp_provenance(ds: xr.Dataset, cfg, cfg_hash: str,
-                     src_path: Path | None = None) -> xr.Dataset:
-    """Attach provenance attributes to *ds*, appending to `history`."""
+                     src_path: Path | None = None,
+                     stage: str | None = None) -> xr.Dataset:
+    """Attach provenance attributes to *ds*, appending to `history`.
+
+    `stage` names the last step that produced the file; see set_stage.
+    """
     from . import __version__
 
     attrs = provenance_attrs(cfg, cfg_hash, src_path)
+    if stage:
+        set_stage(ds, stage)
     stamp = attrs["palm_postproc_processed"]
     line = f"{stamp}: palm_postproc {__version__}: {attrs['palm_postproc_command']}"
     existing = str(ds.attrs.get("history", "")).rstrip()
     ds.attrs.update(attrs)
     ds.attrs["history"] = f"{existing}\n{line}".strip() if existing else line
     return ds
+
+
+def set_stage(ds: xr.Dataset, stage: str) -> None:
+    """Mark *ds* with the step that wrote it (`palm_postproc_stage`).
+
+    Join stamps "join" and palm2gis reads that as confirmation that a file
+    is its intended input. Every later step copies the global attributes
+    along, so without this an analysis file - origin and units already
+    applied - still claimed to be join output.
+    """
+    ds.attrs["palm_postproc_stage"] = stage
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +94,12 @@ def make_encoding(ds: xr.Dataset, complevel: int) -> dict:
     return enc
 
 
-def write_dataset(ds_out: xr.Dataset, out_path: Path, complevel: int) -> None:
-    """Write dataset to NetCDF4 with zlib compression."""
+def write_dataset(ds_out: xr.Dataset, out_path: Path, complevel: int,
+                  stage: str | None = None) -> None:
+    """Write dataset to NetCDF4 with zlib compression, marked with *stage*."""
+    if stage:
+        ds_out = ds_out.copy()
+        set_stage(ds_out, stage)
     encoding = make_encoding(ds_out, complevel)
     # A time-invariant variable (ind_z_xy, zusi, zwwi) selected out of a
     # larger dataset inherits that dataset's encoding, which still declares

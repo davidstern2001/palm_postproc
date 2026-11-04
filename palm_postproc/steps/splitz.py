@@ -138,7 +138,7 @@ def _process_file(
     t0 = time.monotonic()
     try:
         ds_sliced = _slice_by_z(ds, z_max, z_coord)
-        write_dataset(ds_sliced, out_path, cfg.complevel)
+        write_dataset(ds_sliced, out_path, cfg.complevel, stage="splitz")
         log.info("[splitz] wrote %s: z <= %.1f m, %d/%d levels, %s in %s",
                  out_path.name, z_max, n_z_out, n_z_total, fmt_size(out_path),
                  fmt_elapsed(t0))

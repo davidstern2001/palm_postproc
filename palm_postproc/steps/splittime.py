@@ -222,7 +222,7 @@ def _process_file(
     t0 = time.monotonic()
     try:
         ds_sliced = _select_timesteps(ds, t_start, t_end, timestep_secs)
-        write_dataset(ds_sliced, out_path, cfg.complevel)
+        write_dataset(ds_sliced, out_path, cfg.complevel, stage="splittime")
         log.info("[splittime] wrote %s: %s in %s", out_path.name,
                  fmt_size(out_path), fmt_elapsed(t0))
         return True

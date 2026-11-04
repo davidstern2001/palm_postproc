@@ -117,6 +117,12 @@ analysis:                        # split by variable, cut, georeferenced
                                  #        dimension coordinates; the
                                  #        projected dims are always kept.
                                  # both:  UTM aux variables AND lat/lon
+                                 # For QGIS, use utm. GDAL older than 3.6
+                                 # (QGIS 3.28 on Ubuntu 22.04, for one)
+                                 # takes the 2-D lat/lon of wgs84 / both
+                                 # as geolocation and drops the UTM grid:
+                                 # the layer lands at the equator in Gabon,
+                                 # upside down.
 
 
 # ---------------------------------------------------------------------

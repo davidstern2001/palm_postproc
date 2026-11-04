@@ -20,7 +20,7 @@ import pyproj
 from ..config import Config, CoordConfig
 from ..log import step
 from ..utils import (
-    write_dataset, try_dask_chunks,
+    write_dataset, try_dask_chunks, set_stage,
     fmt_size, fmt_elapsed, should_write,
 )
 
@@ -627,6 +627,7 @@ def _process_file(
 
     try:
         ds_out = _add_coordinates(ds, cfg.steps.coord, src_path, log)
+        set_stage(ds_out, "coord")
         encoding = {
             var: {"zlib": True, "complevel": cfg.complevel, "shuffle": True}
             for var in ds_out.data_vars
