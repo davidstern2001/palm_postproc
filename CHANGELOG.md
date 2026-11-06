@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.6
+
+**No second job directory inside the job directory**
+
+- With a 0.6-layout config the resume state
+  (`.palm_postproc_state.json`) was written to `{root}/{name}/`, and
+  `project.root` already names the job, so every run created e.g.
+  `holesovice_stern_now/holesovice_stern_now/`. The 0.6 layout now passes
+  `project.root` as the job directory, and defaults derived from it land
+  there too. Legacy configs keep `{base}/{case}`.
+- An existing state file in the nested directory is read once, moved up
+  on the next run that writes, and the directory removed if empty, so
+  finished outputs are still recognised as up to date.
+
 ## 0.6.5
 
 **Analysis output no longer claims to be join output**

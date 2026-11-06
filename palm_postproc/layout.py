@@ -203,7 +203,9 @@ def translate(raw):
     out_dir = _under(root, project.get("output_dir") or ".", name)
     joined_dir = _dir(raw.get("joined"), "joined")
     analysis_dir = _dir(raw.get("analysis"), "analysis")
-    paths = {"base": root}
+    # root already is the job's directory: also passed as case_dir, or the
+    # legacy {base}/{case} rule would nest a second {name} inside it.
+    paths = {"base": root, "case_dir": root}
     paths["join_input"] = _under(root, inp.get("palm_output") or "OUTPUT",
                                  name)
     if inp.get("joined"):

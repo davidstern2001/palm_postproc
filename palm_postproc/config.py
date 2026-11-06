@@ -101,6 +101,7 @@ _DEFAULTS: dict = {
 @dataclass
 class PathsConfig:
     base:             Path
+    case_dir:         Path            # the job's own directory; holds the state file
     join_input:       Path            # raw PALM OUTPUT dir (input to join step)
     output_join:      Path            # joined files (input to post-join steps)
     output_splitvar:  Path
@@ -253,9 +254,12 @@ def _build_paths(raw_paths: dict, case: str, domain_suffix: str) -> PathsConfig:
         raise ValueError("paths.base is required in the configuration file.")
 
     base    = Path(raw_paths["base"]).expanduser()
-    # outbase = {base}/{case} — the individual case directory.
-    # base is expected to be the JOBS root (e.g. ~/palm/model.git/build/JOBS).
-    outbase = str(base / case)
+    # outbase = the individual case directory. In the legacy layout base is
+    # the JOBS root (e.g. ~/palm/model.git/build/JOBS) and the case directory
+    # is {base}/{case}. The 0.6 layout passes it as case_dir (project.root,
+    # which already names the case) - deriving it there doubled the case name.
+    case_dir = Path(raw_paths.get("case_dir") or base / case).expanduser()
+    outbase = str(case_dir)
 
     def resolve(key: str, default_template: str) -> Path:
         """Resolve a path key; default_template uses {base}/{outbase}/{case} tokens."""
@@ -274,6 +278,7 @@ def _build_paths(raw_paths: dict, case: str, domain_suffix: str) -> PathsConfig:
 
     return PathsConfig(
         base             = base,
+        case_dir         = case_dir,
         join_input       = resolve("join_input",  "{outbase}/OUTPUT"),
         output_join      = resolve("output_join",      "{outbase}/OUTPUT_join"),
         output_splitvar  = resolve("output_splitvar",  "{outbase}/OUTPUT_splitvar"),

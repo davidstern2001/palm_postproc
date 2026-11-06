@@ -4,7 +4,9 @@ palm_postproc.state
 Lightweight resume system: records a fingerprint for each output file and
 skips re-processing when the source file and config are unchanged.
 
-State is stored as JSON in {base}/{case}/.palm_postproc_state.json.
+State is stored as JSON in {case_dir}/.palm_postproc_state.json: the job's
+directory ({base}/{case} in the legacy config layout, project.root in the 0.6
+layout).
 
 Fingerprint = (source_path, source_mtime, source_size, config_hash)
 
@@ -135,18 +137,28 @@ class State:
         self._records = records
         self._meta    = dict(meta or {})
         self._dirty   = False
+        self._moved_from: Path | None = None   # legacy file to remove on save
 
     # ---- Construction -----------------------------------------------------
 
     @classmethod
     def load(cls, cfg) -> "State":
-        state_path = Path(cfg.paths.base) / cfg.case / _STATE_FILENAME
+        state_path = Path(cfg.paths.case_dir) / _STATE_FILENAME
         records: dict[str, _Record] = {}
         meta: dict = {}
 
-        if state_path.is_file():
+        # Before 0.6.6 a 0.6-layout config kept its state one directory too
+        # deep, in {root}/{name}/. Read it from there once; save() moves it.
+        legacy = Path(cfg.paths.base) / cfg.case / _STATE_FILENAME
+        moved_from = None
+        read_path = state_path
+        if (not state_path.is_file() and legacy != state_path
+                and legacy.is_file()):
+            read_path = moved_from = legacy
+
+        if read_path.is_file():
             try:
-                with state_path.open() as fh:
+                with read_path.open() as fh:
                     raw = json.load(fh)
                 meta = raw.pop(cls._META_KEY, {}) or {}
                 records = {k: _Record.from_dict(v) for k, v in raw.items()}
@@ -155,7 +167,13 @@ class State:
             except Exception as exc:
                 log.warning("[state] could not read state file (%s) - starting fresh.", exc)
 
-        return cls(state_path, records, meta)
+        state = cls(state_path, records, meta)
+        if moved_from is not None:
+            log.info("[state] moving %s from %s to %s", _STATE_FILENAME,
+                     moved_from.parent, state_path.parent)
+            state._moved_from = moved_from
+            state._dirty = True
+        return state
 
     # ---- Query ------------------------------------------------------------
 
@@ -274,5 +292,12 @@ class State:
             log.debug("[state] saved %d record(s) to %s",
                       len(self._records), self._path.name)
             self._dirty = False
+            if self._moved_from is not None:
+                old, self._moved_from = self._moved_from, None
+                old.unlink(missing_ok=True)
+                try:
+                    old.parent.rmdir()      # only if nothing else is in it
+                except OSError:
+                    pass
         except Exception as exc:
             log.warning("[state] could not save state file: %s", exc)

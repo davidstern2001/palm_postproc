@@ -785,6 +785,14 @@ analysis:
           "layout: temperatures are Celsius by default", failures)
     run_pipeline(cfg, dry_run=False, only=None)
 
+    # project.root already names the job; the state file used to land in
+    # a second {name}/ inside it.
+    job = base / "selftest"
+    check((job / ".palm_postproc_state.json").is_file()
+          and not (job / "selftest").exists(),
+          "layout: the state file is in project.root, not root/name/",
+          failures)
+
     joined = base / "selftest" / "OUTPUT_join"
     post = base / "selftest" / "OUTPUT_post"
     check(any(joined.glob("*_av_3d_N02.nc")),

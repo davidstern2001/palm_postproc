@@ -23,7 +23,7 @@ ProcessPoolExecutor. Each worker handles one source file independently.
 
 Resume / skip
 -------------
-A state file ({base}/{case}/.palm_postproc_state.json) records a fingerprint
+A state file ({case_dir}/.palm_postproc_state.json) records a fingerprint
 for every output file. Files whose source and config are unchanged are
 skipped automatically, even across separate runs.
 
@@ -503,6 +503,9 @@ def run(
             total_failures += _process_file_chained(
                 src_path, cfg, state, cfg_h, dry_run, only=None
             )
+
+    if not dry_run:
+        state.save()        # no-op unless something changed, e.g. a moved file
 
     elapsed = time.monotonic() - t_total
     if total_failures:
