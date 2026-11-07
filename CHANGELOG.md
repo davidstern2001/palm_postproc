@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.7
+
+**Chunked reads: no more cut chunks along x / y**
+
+- 0.6.3 also set `y` and `x` chunks to the largest stored chunk size in
+  the file. Variables of different shape store them in different pieces
+  (a 3D field on `zu_3d` in 334-wide chunks next to a soil field on
+  `zs_3d` in 500-wide ones, on a 1000 x 1000 root domain), so a size of
+  500 still cut the 334-wide chunks and xarray warned along `y` and `x`.
+  Only the dimensions the steps request (`time`, `zu_3d`) are set now,
+  rounded to a common multiple of every stored size along them, or read
+  whole when none fits; every other dimension follows each variable's
+  own stored chunks (xarray 2023.1 reads them whole, as before 0.6.3).
+
 ## 0.6.6
 
 **No second job directory inside the job directory**

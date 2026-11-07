@@ -332,8 +332,26 @@ def chunk_alignment_check(root, failures):
                           zlib=True, chunksizes=(1, 12, 8, 16))[0] = 1.0
 
     got = _align_chunks({"time": 4, "zu_3d": 10}, path)
-    check(got == {"time": 4, "zu_3d": 12, "y": 8},
+    check(got == {"time": 4, "zu_3d": 12},
           f"chunks rounded up to whole stored chunks, got {got}", failures)
+
+    # Two shapes storing y in pieces of 8 and 6: no single y chunk fits
+    # both, so y is left to each variable's own chunks; zu_3d is stored in
+    # 12 and 8, so it needs a multiple of 24 - the whole dimension.
+    path = root / "chunks_mixed.nc"
+    with Dataset(path, "w", format="NETCDF4") as ds:
+        ds.createDimension("time", None)
+        ds.createDimension("zu_3d", 24)
+        ds.createDimension("y", 24)
+        ds.createDimension("x", 16)
+        ds.createVariable("u", "f4", ("time", "zu_3d", "y", "x"),
+                          zlib=True, chunksizes=(1, 12, 8, 16))[0] = 1.0
+        ds.createVariable("w", "f4", ("time", "zu_3d", "y", "x"),
+                          zlib=True, chunksizes=(1, 8, 6, 16))[0] = 1.0
+    got = _align_chunks({"time": 4, "zu_3d": 10}, path)
+    check(got == {"time": 4, "zu_3d": -1},
+          f"mixed stored chunks: common multiple or whole, y and x left "
+          f"alone, got {got}", failures)
 
 
 # ------------------------------

@@ -145,7 +145,18 @@ def _align_chunks(chunks: dict, src_path: Path) -> dict:
     size is rounded up to a whole number of stored chunks, and a dimension
     stored in pieces smaller than its length is chunked as stored, which
     keeps a dask chunk the size of a few stored ones.
+
+    Only the requested dimensions are set. Variables of different shape
+    store a dimension in different pieces - a 3D field on zu_3d next to a
+    soil field on zs_3d can hold y in chunks of 334 and 500 - and any one
+    size set for y cuts some variable's chunks (xarray: 'separate the
+    stored chunks along dimension "y" starting at index 500'). A dimension
+    left out follows each variable's own stored chunks. A requested one is
+    rounded to a common multiple of every stored size along it, or read
+    whole when no such multiple fits.
     """
+    from math import lcm
+
     from netCDF4 import Dataset
 
     stored: dict = {}
@@ -158,18 +169,19 @@ def _align_chunks(chunks: dict, src_path: Path) -> dict:
             if layout == "contiguous" or layout is None:
                 continue
             for dn, c in zip(v.dimensions, layout):
-                stored[dn] = max(stored.get(dn, 0), int(c))
+                if dn in chunks:
+                    stored.setdefault(dn, set()).add(int(c))
 
     out = {}
-    for dn, s in stored.items():
-        if dn in chunks:
-            n = int(chunks[dn])
-            out[dn] = -(-n // s) * s           # ceil to a multiple of s
-        elif s < sizes.get(dn, 0):
-            out[dn] = s
-    # A requested dimension the file does not chunk keeps the request.
     for dn, n in chunks.items():
-        out.setdefault(dn, n)
+        if dn not in stored:
+            out[dn] = n             # not chunked in the file: keep the request
+            continue
+        step = lcm(*stored[dn])
+        n = -(-int(n) // step) * step                   # ceil to a multiple
+        # time is unlimited and grows; any other dimension that a common
+        # multiple does not fit into is read whole
+        out[dn] = n if dn == "time" or n < sizes.get(dn, 0) else -1
     return out
 
 
